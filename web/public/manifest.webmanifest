@@ -1,0 +1,11 @@
+{
+  "name": "Veyra",
+  "short_name": "Veyra",
+  "description": "Seu assistente pessoal inteligente.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F7F8FA",
+  "theme_color": "#F7F8FA",
+  "lang": "pt-BR",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
