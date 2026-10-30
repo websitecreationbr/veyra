@@ -5,7 +5,7 @@ import type { DB } from "../db/index.js";
 import { HttpError } from "../util/validate.js";
 import { userFromSession, type User } from "../services/auth.js";
 import { makeCtx, type Ctx } from "../services/context.js";
-import { RateLimiter } from "./rateLimit.js";
+import { DbLimiter, MemoryLimiter, type Limiter } from "./rateLimit.js";
 import type { Clock } from "../util/time.js";
 import type { Llm } from "../ai/claude.js";
 
@@ -33,7 +33,7 @@ export interface Req {
   ip: string;
   user: User | null;
   token: string | undefined;
-  ctx(): Ctx; // exige usuário autenticado
+  ctx(): Promise<Ctx>; // exige usuário autenticado
 }
 
 export interface Reply {
@@ -45,7 +45,7 @@ export type Handler = (r: Req, app: AppState) => Reply | Promise<Reply>;
 
 export interface AppState {
   opts: AppOptions;
-  limiters: { login: RateLimiter; register: RateLimiter; chat: RateLimiter; api: RateLimiter };
+  limiters: { login: Limiter; register: Limiter; chat: Limiter; api: Limiter };
 }
 
 interface Route {
@@ -124,15 +124,20 @@ function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
-export function createApp(opts: AppOptions): { server: Server; state: AppState } {
+/**
+ * Cria o tratador de requisições (req, res) — a mesma função serve ao servidor local (createApp)
+ * e à função serverless da Vercel (server/src/vercel.ts).
+ */
+export function createHandler(opts: AppOptions): { handle: (req: IncomingMessage, res: ServerResponse) => Promise<void>; state: AppState } {
   const l = opts.limits ?? {};
+  const nowMs = () => opts.clock.now().getTime();
   const state: AppState = {
     opts,
     limiters: {
-      login: new RateLimiter(l.login ?? 10, 15 * 60_000),
-      register: new RateLimiter(l.register ?? 8, 60 * 60_000),
-      chat: new RateLimiter(l.chat ?? 40, 60_000),
-      api: new RateLimiter(l.api ?? 600, 60_000),
+      login: new DbLimiter(opts.db, "login", l.login ?? 10, 15 * 60_000, nowMs),
+      register: new DbLimiter(opts.db, "register", l.register ?? 8, 60 * 60_000, nowMs),
+      chat: new DbLimiter(opts.db, "chat", l.chat ?? 40, 60_000, nowMs),
+      api: new MemoryLimiter(l.api ?? 600, 60_000),
     },
   };
   const distRoot = opts.webDist ? resolve(opts.webDist) : undefined;
@@ -165,7 +170,7 @@ export function createApp(opts: AppOptions): { server: Server; state: AppState }
     return true;
   };
 
-  const server = createServer(async (req, res) => {
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const method = req.method ?? "GET";
@@ -176,7 +181,7 @@ export function createApp(opts: AppOptions): { server: Server; state: AppState }
         return send(res, 404, { error: "Não encontrado.", code: "nao_encontrado" });
       }
 
-      const wait = state.limiters.api.check(ip);
+      const wait = await state.limiters.api.check(ip);
       if (wait) return send(res, 429, { error: "Muitas requisições. Aguarde um instante.", code: "limite" }, { "Retry-After": String(wait) });
 
       // Proteção CSRF para métodos que alteram estado: cabeçalho customizado + checagem de Origin.
@@ -190,7 +195,7 @@ export function createApp(opts: AppOptions): { server: Server; state: AppState }
       }
 
       const token = parseCookies(req.headers.cookie)[COOKIE];
-      const user = userFromSession(opts.db, token, opts.clock.now()) ?? null;
+      const user = (await userFromSession(opts.db, token, opts.clock.now())) ?? null;
 
       let matched: { r: Route; params: Record<string, string> } | undefined;
       let pathExists = false;
@@ -208,7 +213,7 @@ export function createApp(opts: AppOptions): { server: Server; state: AppState }
       const body = method === "GET" || method === "HEAD" ? undefined : await readJson(req);
       const request: Req = {
         raw: req, res, url, params: matched.params, body, ip, user, token,
-        ctx: () => {
+        ctx: async () => {
           if (!user) throw new HttpError(401, "Faça login para continuar.", "nao_autenticado");
           return makeCtx(opts.db, user.id, opts.clock);
         },
@@ -220,6 +225,12 @@ export function createApp(opts: AppOptions): { server: Server; state: AppState }
       console.error("[erro]", e);
       send(res, 500, { error: "Algo deu errado do nosso lado. Tente novamente.", code: "interno" });
     }
-  });
-  return { server, state };
+  };
+  return { handle, state };
+}
+
+/** Servidor local/tradicional (npm run dev / npm start). */
+export function createApp(opts: AppOptions): { server: Server; state: AppState } {
+  const { handle, state } = createHandler(opts);
+  return { server: createServer((req, res) => void handle(req, res)), state };
 }

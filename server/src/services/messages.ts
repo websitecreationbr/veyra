@@ -36,24 +36,27 @@ const toMsg = (r: Row): ChatMessage => ({
   awaitingAnswer: !!r.pending,
 });
 
-export function saveMessage(ctx: Ctx, m: { role: "user" | "assistant"; text: string; actions?: ActionChip[]; pending?: Pending | null }): ChatMessage {
+export async function saveMessage(ctx: Ctx, m: { role: "user" | "assistant"; text: string; actions?: ActionChip[]; pending?: Pending | null }): Promise<ChatMessage> {
   const id = randomUUID();
-  run(ctx.db, "INSERT INTO messages (id, user_id, role, content, actions, pending) VALUES (?,?,?,?,?,?)",
-    id, ctx.userId, m.role, m.text, m.actions?.length ? JSON.stringify(m.actions) : null, m.pending ? JSON.stringify(m.pending) : null);
-  return toMsg(get<Row>(ctx.db, "SELECT * FROM messages WHERE id = ?", id)!);
+  await run(ctx.db,
+    `INSERT INTO messages (id, user_id, role, content, actions, pending, seq)
+     VALUES (?,?,?,?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE user_id = ?))`,
+    id, ctx.userId, m.role, m.text, m.actions?.length ? JSON.stringify(m.actions) : null, m.pending ? JSON.stringify(m.pending) : null, ctx.userId);
+  return toMsg((await get<Row>(ctx.db, "SELECT * FROM messages WHERE user_id = ? AND id = ?", ctx.userId, id))!);
 }
 
-export function history(ctx: Ctx, limit = 60): ChatMessage[] {
-  return all<Row>(ctx.db, "SELECT * FROM (SELECT rowid AS rid, * FROM messages WHERE user_id = ? ORDER BY rowid DESC LIMIT ?) ORDER BY rid", ctx.userId, limit).map(toMsg);
+export async function history(ctx: Ctx, limit = 60): Promise<ChatMessage[]> {
+  const rows = await all<Row>(ctx.db, "SELECT * FROM (SELECT * FROM messages WHERE user_id = ? ORDER BY seq DESC LIMIT ?) m ORDER BY seq", ctx.userId, limit);
+  return rows.map(toMsg);
 }
 
 /** Se a última mensagem da Veyra fez uma pergunta de acompanhamento, devolve o contexto dela. */
-export function lastPending(ctx: Ctx): Pending | undefined {
-  const last = get<Row>(ctx.db, "SELECT * FROM messages WHERE user_id = ? ORDER BY rowid DESC LIMIT 1", ctx.userId);
+export async function lastPending(ctx: Ctx): Promise<Pending | undefined> {
+  const last = await get<Row>(ctx.db, "SELECT * FROM messages WHERE user_id = ? ORDER BY seq DESC LIMIT 1", ctx.userId);
   if (last?.role === "assistant" && last.pending) return JSON.parse(last.pending) as Pending;
   return undefined;
 }
 
-export function clearHistory(ctx: Ctx): void {
-  run(ctx.db, "DELETE FROM messages WHERE user_id = ?", ctx.userId);
+export async function clearHistory(ctx: Ctx): Promise<void> {
+  await run(ctx.db, "DELETE FROM messages WHERE user_id = ?", ctx.userId);
 }

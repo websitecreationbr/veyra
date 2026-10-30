@@ -12,17 +12,18 @@ if (!email) {
   console.error("Informe o e-mail de uma conta existente: npm run seed -- voce@email.com [--remove]");
   process.exit(1);
 }
-const db = openDb(resolve(config.dataDir, "veyra.db"));
-const u = get<{ id: string }>(db, "SELECT id FROM users WHERE email = ?", email.toLowerCase());
+const db = await openDb({ databaseUrl: config.databaseUrl, ssl: config.databaseSsl, poolMax: config.pgPoolMax, sqliteFile: resolve(config.dataDir, "veyra.db") });
+const u = await get<{ id: string }>(db, "SELECT id FROM users WHERE email = ?", email.toLowerCase());
 if (!u) {
   console.error("Conta não encontrada. Cadastre-se primeiro no app.");
   process.exit(1);
 }
-const ctx = makeCtx(db, u.id, systemClock);
+const ctx = await makeCtx(db, u.id, systemClock);
 if (flag === "--remove") {
-  removeDemo(ctx);
+  await removeDemo(ctx);
   console.log("Dados de demonstração removidos.");
 } else {
-  loadDemo(ctx);
+  await loadDemo(ctx);
   console.log("Dados de demonstração carregados (marcados como 'demo').");
 }
+await db.close();

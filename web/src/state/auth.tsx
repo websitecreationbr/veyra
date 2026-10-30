@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import type { PlannedFeature, User } from "../lib/types";
 
 type Status = "loading" | "anon" | "authed";
@@ -17,18 +17,24 @@ const Ctx = createContext<AuthCtx | null>(null);
 
 interface MeResponse { user: User; ai: { provider: "claude" | "local" }; planned: PlannedFeature[] }
 
+const sessionNotStarted = () =>
+  new ApiError(401, "Deu certo, mas o navegador não manteve o login. Verifique se os cookies estão liberados para este site e tente entrar.", "sessao");
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
   const [user, setUser] = useState<User | null>(null);
   const [ai, setAi] = useState<"claude" | "local">("local");
   const [planned, setPlanned] = useState<PlannedFeature[]>([]);
 
-  const loadMe = useCallback(async () => {
+  /** Carrega a sessão atual. Devolve true se há usuário logado. */
+  const loadMe = useCallback(async (): Promise<boolean> => {
     try {
       const me = await api<MeResponse>("GET", "/api/me");
       setUser(me.user); setAi(me.ai.provider); setPlanned(me.planned); setStatus("authed");
+      return true;
     } catch {
       setUser(null); setStatus("anon");
+      return false;
     }
   }, []);
 
@@ -43,12 +49,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     status, user, ai, planned,
     async login(email, password) {
       await api("POST", "/api/auth/login", { email, password });
-      await loadMe();
+      if (!(await loadMe())) throw sessionNotStarted();
     },
     async register(name, email, password) {
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       await api("POST", "/api/auth/register", { name, email, password, timezone });
-      await loadMe();
+      if (!(await loadMe())) throw sessionNotStarted();
     },
     async logout() {
       try { await api("POST", "/api/auth/logout", {}); } finally { setUser(null); setStatus("anon"); window.history.replaceState({}, "", "/"); }

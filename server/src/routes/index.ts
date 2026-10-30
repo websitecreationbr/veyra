@@ -14,37 +14,46 @@ import { PERIODS, addDays, isDate, periodRange, type Period } from "../util/time
 const publicUser = (u: auth.User) => ({ id: u.id, name: u.name, email: u.email, timezone: u.timezone });
 
 // ---------------- Saúde ----------------
-route("GET", "/api/health", { auth: false }, () => ({ json: { ok: true } }));
+route("GET", "/api/health", { auth: false }, async (_r, app) => {
+  // Confirma que o banco responde — é o primeiro teste a fazer depois de publicar.
+  try {
+    await app.opts.db.get("SELECT 1 AS ok");
+    return { json: { ok: true, db: app.opts.db.dialect } };
+  } catch (e) {
+    console.error("[health] banco indisponível:", (e as Error).message);
+    return { status: 503, json: { ok: false, db: app.opts.db.dialect, error: "Banco de dados indisponível.", code: "banco_indisponivel" } };
+  }
+});
 
 // ---------------- Autenticação ----------------
-route("POST", "/api/auth/register", { auth: false }, (r, app) => {
-  const wait = app.limiters.register.check(r.ip);
+route("POST", "/api/auth/register", { auth: false }, async (r, app) => {
+  const wait = await app.limiters.register.check(r.ip);
   if (wait) throw new HttpError(429, "Muitos cadastros deste endereço. Tente mais tarde.", "limite");
   const b = asObject(r.body);
-  const user = auth.register(app.opts.db, {
+  const user = await auth.register(app.opts.db, {
     name: reqStr(b, "name", { max: 60 }),
     email: reqStr(b, "email", { max: 254 }),
     password: typeof b.password === "string" ? b.password : "",
     timezone: str(b, "timezone", { optional: true, max: 60 }),
   });
-  const token = auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
+  const token = await auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
   return { status: 201, json: { user: publicUser(user) }, headers: { "Set-Cookie": sessionCookie(token, { isProd: app.opts.isProd, days: app.opts.sessionDays }) } };
 });
 
-route("POST", "/api/auth/login", { auth: false }, (r, app) => {
+route("POST", "/api/auth/login", { auth: false }, async (r, app) => {
   const b = asObject(r.body);
   const email = reqStr(b, "email", { max: 254 }).toLowerCase();
   const key = `${r.ip}|${email}`;
-  const wait = app.limiters.login.check(key);
+  const wait = await app.limiters.login.check(key);
   if (wait) throw new HttpError(429, `Muitas tentativas. Tente novamente em ${Math.ceil(wait / 60)} min.`, "limite");
-  const user = auth.authenticate(app.opts.db, email, typeof b.password === "string" ? b.password : "");
-  app.limiters.login.reset(key);
-  const token = auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
+  const user = await auth.authenticate(app.opts.db, email, typeof b.password === "string" ? b.password : "");
+  await app.limiters.login.reset(key);
+  const token = await auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
   return { json: { user: publicUser(user) }, headers: { "Set-Cookie": sessionCookie(token, { isProd: app.opts.isProd, days: app.opts.sessionDays }) } };
 });
 
-route("POST", "/api/auth/logout", { auth: false }, (r, app) => {
-  auth.destroySession(app.opts.db, r.token);
+route("POST", "/api/auth/logout", { auth: false }, async (r, app) => {
+  await auth.destroySession(app.opts.db, r.token);
   return { json: { ok: true }, headers: { "Set-Cookie": clearCookie(app.opts.isProd) } };
 });
 
@@ -57,26 +66,26 @@ route("GET", "/api/me", {}, (r, app) => ({
   },
 }));
 
-route("PATCH", "/api/me", {}, (r, app) => {
+route("PATCH", "/api/me", {}, async (r, app) => {
   const b = asObject(r.body);
-  const user = auth.updateProfile(app.opts.db, r.user!.id, { name: str(b, "name", { optional: true, max: 60 }), timezone: str(b, "timezone", { optional: true, max: 60 }) });
+  const user = await auth.updateProfile(app.opts.db, r.user!.id, { name: str(b, "name", { optional: true, max: 60 }), timezone: str(b, "timezone", { optional: true, max: 60 }) });
   return { json: { user: publicUser(user) } };
 });
 
 // ---------------- Início ----------------
-route("GET", "/api/dashboard", {}, (r) => ({ json: dashboard(r.ctx()) }));
+route("GET", "/api/dashboard", {}, async (r) => ({ json: await dashboard(await r.ctx()) }));
 
 // ---------------- Conversa (Flow) ----------------
 route("POST", "/api/chat", {}, async (r, app) => {
-  const wait = app.limiters.chat.check(r.user!.id);
+  const wait = await app.limiters.chat.check(r.user!.id);
   if (wait) throw new HttpError(429, "Calma, uma mensagem de cada vez. Tente de novo em instantes.", "limite");
   const b = asObject(r.body);
-  const turn = await handleChat(r.ctx(), reqStr(b, "text", { max: 2000 }), { llm: app.opts.llm });
+  const turn = await handleChat(await r.ctx(), reqStr(b, "text", { max: 2000 }), { llm: app.opts.llm });
   return { json: turn };
 });
-route("GET", "/api/chat/history", {}, (r) => ({ json: { messages: msgs.history(r.ctx(), 80) } }));
-route("DELETE", "/api/chat/history", {}, (r) => {
-  msgs.clearHistory(r.ctx());
+route("GET", "/api/chat/history", {}, async (r) => ({ json: { messages: await msgs.history(await r.ctx(), 80) } }));
+route("DELETE", "/api/chat/history", {}, async (r) => {
+  await msgs.clearHistory(await r.ctx());
   return { json: { ok: true } };
 });
 
@@ -87,74 +96,74 @@ function periodParam(r: { url: URL }, fallback: Period = "mes"): Period {
   return p as Period;
 }
 
-route("GET", "/api/finance/summary", {}, (r) => {
-  const ctx = r.ctx();
+route("GET", "/api/finance/summary", {}, async (r) => {
+  const ctx = await r.ctx();
   const period = periodParam(r);
   const range = periodRange(period, ctx.now.date);
-  const income = fin.realIncome(ctx, range);
-  const expense = fin.realExpenses(ctx, range);
+  const income = await fin.realIncome(ctx, range);
+  const expense = await fin.realExpenses(ctx, range);
   return {
     json: {
       period, range,
-      balanceCents: fin.balance(ctx),
+      balanceCents: await fin.balance(ctx),
       incomeCents: income,
       expenseCents: expense,
       resultCents: income - expense,
-      byCategory: fin.expensesByCategory(ctx, range),
-      compare: period === "mes" ? fin.monthOverMonth(ctx) : null,
-      projection: fin.projection(ctx),
+      byCategory: await fin.expensesByCategory(ctx, range),
+      compare: period === "mes" ? await fin.monthOverMonth(ctx) : null,
+      projection: await fin.projection(ctx),
     },
   };
 });
 
-route("GET", "/api/finance/transactions", {}, (r) => {
-  const ctx = r.ctx();
+route("GET", "/api/finance/transactions", {}, async (r) => {
+  const ctx = await r.ctx();
   const period = periodParam(r, "tudo");
   const kindRaw = r.url.searchParams.get("kind");
   const kind = kindRaw ? oneOf({ kind: kindRaw }, "kind", ["expense", "income"] as const) : undefined;
   const limit = Math.min(Math.max(Number(r.url.searchParams.get("limit") ?? 50) || 50, 1), 200);
   const offset = Math.max(Number(r.url.searchParams.get("offset") ?? 0) || 0, 0);
-  const items = fin.listTransactions(ctx, { range: periodRange(period, ctx.now.date), kind, limit: limit + 1, offset });
+  const items = await fin.listTransactions(ctx, { range: periodRange(period, ctx.now.date), kind, limit: limit + 1, offset });
   return { json: { items: items.slice(0, limit), hasMore: items.length > limit, today: ctx.now.date } };
 });
 
 // ---------------- Agenda ----------------
-route("GET", "/api/agenda", {}, (r) => {
-  const ctx = r.ctx();
+route("GET", "/api/agenda", {}, async (r) => {
+  const ctx = await r.ctx();
   const from = r.url.searchParams.get("from") ?? ctx.now.date;
   const to = r.url.searchParams.get("to") ?? addDays(from, 6);
   if (!isDate(from) || !isDate(to)) throw bad("Datas inválidas.");
-  return { json: { items: ag.agenda(ctx, from, to), undated: ag.undatedTasks(ctx), overdue: ag.overdueTasks(ctx), today: ctx.now.date } };
+  return { json: { items: await ag.agenda(ctx, from, to), undated: await ag.undatedTasks(ctx), overdue: await ag.overdueTasks(ctx), today: ctx.now.date } };
 });
 
-route("POST", "/api/tasks/:id/done", {}, (r) => {
+route("POST", "/api/tasks/:id/done", {}, async (r) => {
   const b = asObject(r.body ?? {});
   const done = b.done !== false;
-  if (!ag.setTaskDone(r.ctx(), r.params.id!, done)) throw new HttpError(404, "Tarefa não encontrada.", "nao_encontrado");
+  if (!(await ag.setTaskDone(await r.ctx(), r.params.id!, done))) throw new HttpError(404, "Tarefa não encontrada.", "nao_encontrado");
   return { json: { ok: true } };
 });
-route("POST", "/api/reminders/:id/done", {}, (r) => {
+route("POST", "/api/reminders/:id/done", {}, async (r) => {
   const b = asObject(r.body ?? {});
-  if (!ag.setReminderDone(r.ctx(), r.params.id!, b.done !== false)) throw new HttpError(404, "Lembrete não encontrado.", "nao_encontrado");
+  if (!(await ag.setReminderDone(await r.ctx(), r.params.id!, b.done !== false))) throw new HttpError(404, "Lembrete não encontrado.", "nao_encontrado");
   return { json: { ok: true } };
 });
 
 // Remoção genérica — usada pelo "Desfazer" depois que a Veyra registra algo.
-route("DELETE", "/api/records/:kind/:id", {}, (r) => {
+route("DELETE", "/api/records/:kind/:id", {}, async (r) => {
   const kind = oneOf({ kind: r.params.kind }, "kind", ["transaction", "task", "reminder", "event"] as const);
-  if (!ag.deleteRecord(r.ctx(), kind, r.params.id!)) throw new HttpError(404, "Registro não encontrado.", "nao_encontrado");
+  if (!(await ag.deleteRecord(await r.ctx(), kind, r.params.id!))) throw new HttpError(404, "Registro não encontrado.", "nao_encontrado");
   return { json: { ok: true } };
 });
 
 // ---------------- Hábitos ----------------
-route("GET", "/api/habits", {}, (r) => ({ json: { habits: hb.listHabits(r.ctx()) } }));
+route("GET", "/api/habits", {}, async (r) => ({ json: { habits: await hb.listHabits(await r.ctx()) } }));
 
 // ---------------- Dados de demonstração ----------------
-route("POST", "/api/demo", {}, (r) => {
-  loadDemo(r.ctx());
+route("POST", "/api/demo", {}, async (r) => {
+  await loadDemo(await r.ctx());
   return { json: { ok: true } };
 });
-route("DELETE", "/api/demo", {}, (r) => {
-  removeDemo(r.ctx());
+route("DELETE", "/api/demo", {}, async (r) => {
+  await removeDemo(await r.ctx());
   return { json: { ok: true } };
 });

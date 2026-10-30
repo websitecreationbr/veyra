@@ -173,4 +173,26 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_user ON messages(user_id, created_at);
 `,
   },
+  {
+    // Ordem estável de lançamentos/mensagens sem depender de rowid (que só existe no SQLite).
+    name: "002_seq",
+    sql: `
+ALTER TABLE transactions ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+UPDATE transactions SET seq = rowid;
+ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+UPDATE messages SET seq = rowid;
+CREATE INDEX idx_messages_seq ON messages(user_id, seq);
+`,
+  },
+  {
+    // Limitador de tentativas guardado no banco (funciona em várias instâncias / serverless).
+    name: "003_rate_limits",
+    sql: `
+CREATE TABLE rate_limits (
+  k        TEXT PRIMARY KEY,
+  hits     INTEGER NOT NULL,
+  reset_at INTEGER NOT NULL
+);
+`,
+  },
 ];

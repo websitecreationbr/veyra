@@ -101,7 +101,7 @@ export async function runClaude(
     messages.push({ role: "assistant", content: res.content });
     const results: Block[] = [];
     for (const u of uses) {
-      const result = executeTool(ctx, u.name, u.input);
+      const result = await executeTool(ctx, u.name, u.input);
       const e = { name: u.name, input: u.input, result };
       executed.push(e);
       onExecuted?.(e);

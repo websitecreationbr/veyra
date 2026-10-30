@@ -3,18 +3,22 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "API da Veyra — Node puro (node:http + node:sqlite), sem dependências de runtime.",
+  "description": "API da Veyra — Node puro (node:http). SQLite local (node:sqlite) ou PostgreSQL (pacote pg) em produção.",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "seed": "tsx src/demo/cli.ts"
+    "seed": "tsx src/demo/cli.ts",
+    "migrate": "tsx src/db/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
   }
 }

@@ -1,58 +1,79 @@
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { resolve } from "node:path";
 import { migrations } from "./migrations.js";
+import { pgMigrations } from "./migrations.pg.js";
+import { createPgPool, PostgresDb, type PgOptions } from "./postgres.js";
+import { openSqlite, sqliteUserVersion } from "./sqlite.js";
+import type { Db } from "./types.js";
 
-export type DB = DatabaseSync;
+export type { Db, Dialect } from "./types.js";
+export { UniqueViolation } from "./types.js";
+export type DB = Db;
 
-/** Abre (e migra) o banco. Use ":memory:" nos testes. */
-export function openDb(file: string): DB {
-  if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  migrate(db);
+export interface OpenOptions {
+  /** URL do PostgreSQL (ex.: postgres://usuario:senha@host:5432/banco). Se informada, tem prioridade sobre o SQLite. */
+  databaseUrl?: string;
+  ssl?: string;
+  poolMax?: number;
+  /** Arquivo do SQLite (desenvolvimento local) ou ":memory:". */
+  sqliteFile?: string;
+}
+
+/** Abre o banco certo (PostgreSQL se houver DATABASE_URL, senão SQLite) e aplica as migrações pendentes. */
+export async function openDb(opts: OpenOptions | string): Promise<Db> {
+  const o: OpenOptions = typeof opts === "string" ? { sqliteFile: opts } : opts;
+  let db: Db;
+  if (o.databaseUrl) {
+    const pgo: PgOptions = { url: o.databaseUrl, ssl: o.ssl, max: o.poolMax };
+    db = new PostgresDb(await createPgPool(pgo));
+  } else {
+    db = await openSqlite(o.sqliteFile ?? resolve(".data", "veyra.db"));
+  }
+  try {
+    await migrate(db);
+  } catch (e) {
+    await db.close().catch(() => undefined);
+    throw e;
+  }
   return db;
 }
 
-function migrate(db: DB): void {
-  const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
-  for (let i = row.user_version; i < migrations.length; i++) {
-    const m = migrations[i]!;
-    db.exec("BEGIN");
-    try {
-      db.exec(m.sql);
-      db.exec(`PRAGMA user_version = ${i + 1}`);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw new Error(`Falha na migração ${m.name}: ${(e as Error).message}`);
+/** Aplica as migrações pendentes. Pode ser chamada com qualquer Db (os testes usam isso com pools próprios). */
+export async function migrate(db: Db): Promise<void> {
+  if (db.dialect === "sqlite") {
+    const current = await sqliteUserVersion(db);
+    for (let i = current; i < migrations.length; i++) {
+      const m = migrations[i]!;
+      try {
+        await db.tx(async (t) => {
+          await t.run(m.sql);
+          await t.run(`PRAGMA user_version = ${i + 1}`);
+        });
+      } catch (e) {
+        throw new Error(`Falha na migração ${m.name}: ${(e as Error).message}`);
+      }
     }
+    return;
   }
+  // PostgreSQL: tudo numa transação com trava consultiva — duas instâncias subindo ao mesmo tempo não se atropelam.
+  await db.tx(async (t) => {
+    await t.run("SELECT pg_advisory_xact_lock(727274)");
+    await t.run("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)");
+    const done = new Set((await t.all<{ version: number }>("SELECT version FROM schema_migrations")).map((r) => Number(r.version)));
+    for (let i = 0; i < pgMigrations.length; i++) {
+      if (done.has(i + 1)) continue;
+      const m = pgMigrations[i]!;
+      try {
+        await t.run(m.sql);
+      } catch (e) {
+        throw new Error(`Falha na migração ${m.name}: ${(e as Error).message}`);
+      }
+      await t.run("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?)", i + 1, m.name, new Date().toISOString());
+    }
+  });
 }
 
-// ---- Helpers tipados (node:sqlite devolve objetos genéricos) ----
-type Param = string | number | bigint | null | Uint8Array;
-const clean = (p: unknown[]): Param[] => p.map((v) => (v === undefined ? null : (v as Param)));
-
-export function all<T>(db: DB, sql: string, ...params: unknown[]): T[] {
-  return db.prepare(sql).all(...clean(params)) as T[];
-}
-export function get<T>(db: DB, sql: string, ...params: unknown[]): T | undefined {
-  return db.prepare(sql).get(...clean(params)) as T | undefined;
-}
-export function run(db: DB, sql: string, ...params: unknown[]): { changes: number } {
-  const r = db.prepare(sql).run(...clean(params));
-  return { changes: Number(r.changes) };
-}
-
-export function tx<T>(db: DB, fn: () => T): T {
-  db.exec("BEGIN");
-  try {
-    const out = fn();
-    db.exec("COMMIT");
-    return out;
-  } catch (e) {
-    db.exec("ROLLBACK");
-    throw e;
-  }
-}
+// ---- Atalhos (mantêm o código dos serviços curto): all(db, sql, ...), get(...), run(...), tx(...) ----
+export const all = <T>(db: Db, sql: string, ...p: unknown[]) => db.all<T>(sql, ...p);
+export const get = <T>(db: Db, sql: string, ...p: unknown[]) => db.get<T>(sql, ...p);
+export const run = (db: Db, sql: string, ...p: unknown[]) => db.run(sql, ...p);
+export const tx = <T>(db: Db, fn: (t: Db) => Promise<T>) => db.tx(fn);

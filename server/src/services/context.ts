@@ -10,8 +10,8 @@ export interface Ctx {
   now: LocalNow;
 }
 
-export function makeCtx(db: DB, userId: string, clock: Clock): Ctx {
-  const s = get<{ timezone: string }>(db, "SELECT timezone FROM settings WHERE user_id = ?", userId);
+export async function makeCtx(db: DB, userId: string, clock: Clock): Promise<Ctx> {
+  const s = await get<{ timezone: string }>(db, "SELECT timezone FROM settings WHERE user_id = ?", userId);
   const tz = s?.timezone ?? DEFAULT_TZ;
   return { db, userId, tz, clock, now: localNow(clock, tz) };
 }

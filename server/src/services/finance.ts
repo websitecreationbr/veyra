@@ -43,13 +43,13 @@ export const DEFAULT_CATEGORIES: { name: string; kind: Kind; icon: string }[] = 
 
 export const ADJUST_CATEGORY = "Ajuste de saldo";
 
-export function seedDefaultCategories(db: DB, userId: string): void {
+export async function seedDefaultCategories(db: DB, userId: string): Promise<void> {
   for (const c of DEFAULT_CATEGORIES) {
-    run(db, "INSERT OR IGNORE INTO categories (id, user_id, name, kind, icon) VALUES (?,?,?,?,?)", randomUUID(), userId, c.name, c.kind, c.icon);
+    await run(db, "INSERT INTO categories (id, user_id, name, kind, icon) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING", randomUUID(), userId, c.name, c.kind, c.icon);
   }
 }
 
-export function listCategories(ctx: Ctx, kind?: Kind): Category[] {
+export async function listCategories(ctx: Ctx, kind?: Kind): Promise<Category[]> {
   return all<Category>(
     ctx.db,
     `SELECT id, name, kind, icon FROM categories WHERE user_id = ? ${kind ? "AND kind = ?" : ""} ORDER BY name`,
@@ -58,14 +58,14 @@ export function listCategories(ctx: Ctx, kind?: Kind): Category[] {
 }
 
 /** Acha a categoria pelo nome (sem acento/caixa) ou cria uma nova para o usuário. Nunca cruza usuários. */
-export function resolveCategory(ctx: Ctx, kind: Kind, name: string | undefined): Category | null {
+export async function resolveCategory(ctx: Ctx, kind: Kind, name: string | undefined): Promise<Category | null> {
   if (!name || !name.trim()) return null;
   const wanted = norm(name);
-  const existing = listCategories(ctx, kind).find((c) => norm(c.name) === wanted);
+  const existing = (await listCategories(ctx, kind)).find((c) => norm(c.name) === wanted);
   if (existing) return existing;
   const clean = capitalize(name.trim()).slice(0, 40);
   const id = randomUUID();
-  run(ctx.db, "INSERT INTO categories (id, user_id, name, kind, icon) VALUES (?,?,?,?,?)", id, ctx.userId, clean, kind, "•");
+  await run(ctx.db, "INSERT INTO categories (id, user_id, name, kind, icon) VALUES (?,?,?,?,?)", id, ctx.userId, clean, kind, "•");
   return { id, name: clean, kind, icon: "•" };
 }
 
@@ -78,19 +78,20 @@ export interface NewTransaction {
   source?: "user" | "demo";
 }
 
-export function addTransaction(ctx: Ctx, input: NewTransaction): Transaction {
+export async function addTransaction(ctx: Ctx, input: NewTransaction): Promise<Transaction> {
   if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) throw bad("O valor precisa ser maior que zero.");
   if (input.amountCents > MAX_AMOUNT_CENTS) throw bad("Esse valor é alto demais para registrar.");
   const date = input.date ?? ctx.now.date;
   if (!isDate(date)) throw bad("Data inválida.");
-  const cat = resolveCategory(ctx, input.kind, input.category ?? (input.kind === "expense" ? "Outros" : "Outras receitas"));
+  const cat = await resolveCategory(ctx, input.kind, input.category ?? (input.kind === "expense" ? "Outros" : "Outras receitas"));
   const id = randomUUID();
-  run(
+  await run(
     ctx.db,
-    "INSERT INTO transactions (id, user_id, kind, amount_cents, category_id, description, occurred_on, source) VALUES (?,?,?,?,?,?,?,?)",
-    id, ctx.userId, input.kind, input.amountCents, cat?.id ?? null, (input.description ?? "").trim().slice(0, 120), date, input.source ?? "user",
+    `INSERT INTO transactions (id, user_id, kind, amount_cents, category_id, description, occurred_on, source, seq)
+     VALUES (?,?,?,?,?,?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM transactions WHERE user_id = ?))`,
+    id, ctx.userId, input.kind, input.amountCents, cat?.id ?? null, (input.description ?? "").trim().slice(0, 120), date, input.source ?? "user", ctx.userId,
   );
-  return getTransaction(ctx, id)!;
+  return (await getTransaction(ctx, id))!;
 }
 
 interface TxRow {
@@ -118,34 +119,35 @@ const toTx = (r: TxRow): Transaction => ({
   source: r.source,
 });
 
-export function getTransaction(ctx: Ctx, id: string): Transaction | undefined {
-  const r = get<TxRow>(ctx.db, `${TX_SELECT} WHERE t.user_id = ? AND t.id = ?`, ctx.userId, id);
+export async function getTransaction(ctx: Ctx, id: string): Promise<Transaction | undefined> {
+  const r = await get<TxRow>(ctx.db, `${TX_SELECT} WHERE t.user_id = ? AND t.id = ?`, ctx.userId, id);
   return r ? toTx(r) : undefined;
 }
 
-export function deleteTransaction(ctx: Ctx, id: string): boolean {
-  return run(ctx.db, "DELETE FROM transactions WHERE user_id = ? AND id = ?", ctx.userId, id).changes > 0;
+export async function deleteTransaction(ctx: Ctx, id: string): Promise<boolean> {
+  return (await run(ctx.db, "DELETE FROM transactions WHERE user_id = ? AND id = ?", ctx.userId, id)).changes > 0;
 }
 
-export function listTransactions(
+export async function listTransactions(
   ctx: Ctx,
   opts: { range?: Range; kind?: Kind; category?: string; limit?: number; offset?: number } = {},
-): Transaction[] {
+): Promise<Transaction[]> {
   const r = opts.range ?? periodRange("tudo", ctx.now.date);
   const params: unknown[] = [ctx.userId, r.from, r.to];
   let where = "t.user_id = ? AND t.occurred_on BETWEEN ? AND ?";
   if (opts.kind) { where += " AND t.kind = ?"; params.push(opts.kind); }
-  if (opts.category) { where += " AND c.name = ? COLLATE NOCASE"; params.push(opts.category); }
+  if (opts.category) { where += " AND LOWER(c.name) = LOWER(?)"; params.push(opts.category); }
   params.push(Math.min(opts.limit ?? 50, 200), opts.offset ?? 0);
-  return all<TxRow>(
+  const rows = await all<TxRow>(
     ctx.db,
-    `${TX_SELECT} WHERE ${where} ORDER BY t.occurred_on DESC, t.created_at DESC, t.rowid DESC LIMIT ? OFFSET ?`,
+    `${TX_SELECT} WHERE ${where} ORDER BY t.occurred_on DESC, t.seq DESC, t.created_at DESC LIMIT ? OFFSET ?`,
     ...params,
-  ).map(toTx);
+  );
+  return rows.map(toTx);
 }
 
-export function totals(ctx: Ctx, range: Range): { income: number; expense: number; count: number } {
-  const rows = all<{ kind: Kind; total: number; n: number }>(
+export async function totals(ctx: Ctx, range: Range): Promise<{ income: number; expense: number; count: number }> {
+  const rows = await all<{ kind: Kind; total: number; n: number }>(
     ctx.db,
     `SELECT kind, COALESCE(SUM(amount_cents),0) AS total, COUNT(*) AS n FROM transactions
      WHERE user_id = ? AND occurred_on BETWEEN ? AND ? GROUP BY kind`,
@@ -157,8 +159,8 @@ export function totals(ctx: Ctx, range: Range): { income: number; expense: numbe
 }
 
 /** Saldo atual = tudo que entrou até hoje − tudo que saiu até hoje. (Lançamentos futuros não contam.) */
-export function balance(ctx: Ctx): number {
-  const t = totals(ctx, { from: "0000-01-01", to: ctx.now.date, label: "" });
+export async function balance(ctx: Ctx): Promise<number> {
+  const t = await totals(ctx, { from: "0000-01-01", to: ctx.now.date, label: "" });
   return t.income - t.expense;
 }
 
@@ -169,22 +171,22 @@ export interface CategoryTotal {
   share: number; // 0..1
 }
 
-export function expensesByCategory(ctx: Ctx, range: Range): CategoryTotal[] {
-  const rows = all<{ name: string | null; icon: string | null; total: number }>(
+export async function expensesByCategory(ctx: Ctx, range: Range): Promise<CategoryTotal[]> {
+  const rows = await all<{ name: string | null; icon: string | null; total: number }>(
     ctx.db,
     `SELECT c.name AS name, c.icon AS icon, SUM(t.amount_cents) AS total
      FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
      WHERE t.user_id = ? AND t.kind = 'expense' AND t.occurred_on BETWEEN ? AND ?
        AND COALESCE(c.name,'') <> ?
-     GROUP BY t.category_id ORDER BY total DESC`,
+     GROUP BY t.category_id, c.name, c.icon ORDER BY total DESC`,
     ctx.userId, range.from, range.to, ADJUST_CATEGORY,
   );
   const sum = rows.reduce((a, r) => a + r.total, 0) || 1;
   return rows.map((r) => ({ name: r.name ?? "Sem categoria", icon: r.icon ?? "•", totalCents: r.total, share: r.total / sum }));
 }
 
-export function biggestExpense(ctx: Ctx, range: Range): Transaction | undefined {
-  const r = get<TxRow>(
+export async function biggestExpense(ctx: Ctx, range: Range): Promise<Transaction | undefined> {
+  const r = await get<TxRow>(
     ctx.db,
     `${TX_SELECT} WHERE t.user_id = ? AND t.kind = 'expense' AND t.occurred_on BETWEEN ? AND ?
        AND COALESCE(c.name,'') <> ? ORDER BY t.amount_cents DESC, t.occurred_on DESC LIMIT 1`,
@@ -194,8 +196,8 @@ export function biggestExpense(ctx: Ctx, range: Range): Transaction | undefined 
 }
 
 /** Despesas "reais" (sem ajustes de saldo) — usadas em comparações e projeções. */
-export function realExpenses(ctx: Ctx, range: Range): number {
-  const r = get<{ total: number }>(
+export async function realExpenses(ctx: Ctx, range: Range): Promise<number> {
+  const r = await get<{ total: number }>(
     ctx.db,
     `SELECT COALESCE(SUM(t.amount_cents),0) AS total FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
      WHERE t.user_id = ? AND t.kind = 'expense' AND t.occurred_on BETWEEN ? AND ? AND COALESCE(c.name,'') <> ?`,
@@ -204,8 +206,8 @@ export function realExpenses(ctx: Ctx, range: Range): number {
   return r?.total ?? 0;
 }
 
-export function realIncome(ctx: Ctx, range: Range): number {
-  const r = get<{ total: number }>(
+export async function realIncome(ctx: Ctx, range: Range): Promise<number> {
+  const r = await get<{ total: number }>(
     ctx.db,
     `SELECT COALESCE(SUM(t.amount_cents),0) AS total FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
      WHERE t.user_id = ? AND t.kind = 'income' AND t.occurred_on BETWEEN ? AND ? AND COALESCE(c.name,'') <> ?`,
@@ -215,14 +217,14 @@ export function realIncome(ctx: Ctx, range: Range): number {
 }
 
 /** Compara o mesmo recorte do mês atual (1º até hoje) com o mesmo recorte do mês passado. */
-export function monthOverMonth(ctx: Ctx): { currentCents: number; previousCents: number; changePct: number | null } {
+export async function monthOverMonth(ctx: Ctx): Promise<{ currentCents: number; previousCents: number; changePct: number | null }> {
   const today = ctx.now.date;
   const cur = periodRange("mes", today);
   const prevFull = periodRange("mes_passado", today);
   const dayN = Number(today.slice(8));
   const prevTo = addDays(prevFull.from, Math.min(dayN, Number(prevFull.to.slice(8))) - 1);
-  const currentCents = realExpenses(ctx, { from: cur.from, to: today, label: "" });
-  const previousCents = realExpenses(ctx, { from: prevFull.from, to: prevTo, label: "" });
+  const currentCents = await realExpenses(ctx, { from: cur.from, to: today, label: "" });
+  const previousCents = await realExpenses(ctx, { from: prevFull.from, to: prevTo, label: "" });
   return { currentCents, previousCents, changePct: previousCents > 0 ? ((currentCents - previousCents) / previousCents) * 100 : null };
 }
 
@@ -239,18 +241,18 @@ export interface Projection {
  * Estimativa de ritmo de gasto. Usa os últimos 30 dias; se o histórico for mais curto,
  * extrapola (mínimo de 7 dias de dados). É sempre uma ESTIMATIVA.
  */
-export function projection(ctx: Ctx): Projection {
-  const bal = balance(ctx);
-  const first = get<{ d: string | null }>(
+export async function projection(ctx: Ctx): Promise<Projection> {
+  const bal = await balance(ctx);
+  const first = (await get<{ d: string | null }>(
     ctx.db,
     `SELECT MIN(t.occurred_on) AS d FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
      WHERE t.user_id = ? AND t.kind = 'expense' AND COALESCE(c.name,'') <> ?`,
     ctx.userId, ADJUST_CATEGORY,
-  )?.d;
+  ))?.d;
   if (!first) return { enough: false, balanceCents: bal };
   const spanDays = Math.min(30, daysBetween(first, ctx.now.date) + 1);
   if (spanDays < 7) return { enough: false, balanceCents: bal, basisDays: spanDays };
-  const spent = realExpenses(ctx, { from: addDays(ctx.now.date, -(spanDays - 1)), to: ctx.now.date, label: "" });
+  const spent = await realExpenses(ctx, { from: addDays(ctx.now.date, -(spanDays - 1)), to: ctx.now.date, label: "" });
   const monthly = Math.round((spent / spanDays) * 30);
   const end = periodRange("mes", ctx.now.date).to;
   const daysLeft = Math.max(1, daysBetween(ctx.now.date, end) + 1);
@@ -265,10 +267,10 @@ export function projection(ctx: Ctx): Projection {
 }
 
 /** Faz o saldo atual ficar igual ao valor informado, criando um lançamento de ajuste transparente. */
-export function adjustBalance(ctx: Ctx, targetCents: number): { diffCents: number; tx?: Transaction } {
-  const diff = targetCents - balance(ctx);
+export async function adjustBalance(ctx: Ctx, targetCents: number): Promise<{ diffCents: number; tx?: Transaction }> {
+  const diff = targetCents - (await balance(ctx));
   if (diff === 0) return { diffCents: 0 };
-  const t = addTransaction(ctx, {
+  const t = await addTransaction(ctx, {
     kind: diff > 0 ? "income" : "expense",
     amountCents: Math.abs(diff),
     category: ADJUST_CATEGORY,

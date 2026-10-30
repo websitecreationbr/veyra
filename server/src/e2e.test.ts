@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { openDb, type DB } from "./db/index.js";
+import type { DB } from "./db/index.js";
+import { newTestDb, reopenTestDb, dropTestSchemas, DIALECT } from "../test/dbs.js";
 import { createApp, type AppOptions } from "./http/app.js";
 import "./routes/index.js";
 import type { Llm } from "./ai/claude.js";
@@ -15,8 +16,9 @@ import type { Clock } from "./util/time.js";
 const clock: Clock = { now: () => new Date("2026-10-27T16:52:00Z") };
 const tmp = mkdtempSync(join(tmpdir(), "veyra-test-"));
 const openServers = new Set<Server>();
-after(() => {
+after(async () => {
   for (const s of openServers) { s.closeAllConnections(); s.close(); }
+  await dropTestSchemas();
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -26,7 +28,8 @@ interface Started {
   db: DB;
   close(): Promise<void>;
 }
-async function start(extra: Partial<AppOptions> = {}, db: DB = openDb(":memory:")): Promise<Started> {
+async function start(extra: Partial<AppOptions> = {}, dbIn?: DB): Promise<Started> {
+  const db = dbIn ?? (await newTestDb());
   const { server } = createApp({ db, clock, isProd: false, allowedOrigins: [], trustProxy: false, sessionDays: 30, ...extra });
   openServers.add(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -273,9 +276,9 @@ test("projeção de saldo: R$ 3.000 com média de R$ 1.200/mês ≈ 2,5 meses (c
   const { addTransaction } = await import("./services/finance.js");
   const { addDays } = await import("./util/time.js");
   const { get } = await import("./db/index.js");
-  const uid = get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", "proj@a.com")!.id;
-  const ctx = makeCtx(app.db, uid, clock);
-  for (let i = 0; i < 30; i++) addTransaction(ctx, { kind: "expense", amountCents: 4000, category: "Mercado", date: addDays(ctx.now.date, -i) });
+  const uid = (await get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", "proj@a.com"))!.id;
+  const ctx = await makeCtx(app.db, uid, clock);
+  for (let i = 0; i < 30; i++) await addTransaction(ctx, { kind: "expense", amountCents: 4000, category: "Mercado", date: addDays(ctx.now.date, -i) });
   const a = await say(c, "Se eu continuar nesse ritmo, quando meu dinheiro vai acabar?");
   assert.match(a.text, /R\$ 1\.200,00\/mês/);
   assert.match(a.text, /aproximadamente 2,5 meses/);
@@ -290,8 +293,8 @@ test("comparação com o mês passado usa dados reais", async () => {
   const { makeCtx } = await import("./services/context.js");
   const { addTransaction } = await import("./services/finance.js");
   const { get } = await import("./db/index.js");
-  const ctx = makeCtx(app.db, get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", "cmp@a.com")!.id, clock);
-  addTransaction(ctx, { kind: "expense", amountCents: 8000, category: "Mercado", date: "2026-09-10" });
+  const ctx = await makeCtx(app.db, (await get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", "cmp@a.com"))!.id, clock);
+  await addTransaction(ctx, { kind: "expense", amountCents: 8000, category: "Mercado", date: "2026-09-10" });
   const a = await say(c, "Meu gasto aumentou em relação ao mês passado?");
   assert.match(a.text, /R\$ 100,00/);
   assert.match(a.text, /R\$ 80,00/);
@@ -350,10 +353,10 @@ test("ISOLAMENTO: uma conta nunca enxerga nem altera dados de outra", async () =
   const { makeCtx } = await import("./services/context.js");
   const { addTransaction, listCategories } = await import("./services/finance.js");
   const { get } = await import("./db/index.js");
-  const idOf = (email: string) => get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", email)!.id;
-  addTransaction(makeCtx(app.db, idOf("a@iso.com"), clock), { kind: "expense", amountCents: 2000, category: "Pet" });
-  assert.ok(listCategories(makeCtx(app.db, idOf("a@iso.com"), clock)).some((c) => c.name === "Pet"));
-  assert.ok(!listCategories(makeCtx(app.db, idOf("b@iso.com"), clock)).some((c) => c.name === "Pet"));
+  const idOf = async (email: string) => (await get<{ id: string }>(app.db, "SELECT id FROM users WHERE email = ?", email))!.id;
+  await addTransaction(await makeCtx(app.db, await idOf("a@iso.com"), clock), { kind: "expense", amountCents: 2000, category: "Pet" });
+  assert.ok((await listCategories(await makeCtx(app.db, await idOf("a@iso.com"), clock))).some((c) => c.name === "Pet"));
+  assert.ok(!(await listCategories(await makeCtx(app.db, await idOf("b@iso.com"), clock))).some((c) => c.name === "Pet"));
 
   // B tenta concluir tarefa de A pelo id
   const tasksA = (await a.get("/api/agenda?from=2026-10-27&to=2026-10-27")).json.undated as { id: string }[];
@@ -363,17 +366,18 @@ test("ISOLAMENTO: uma conta nunca enxerga nem altera dados de outra", async () =
 
 test("PERSISTÊNCIA: dados sobrevivem a reiniciar o servidor", async () => {
   const file = join(tmp, "persist", "veyra.db");
-  const app1 = await start({}, openDb(file));
+  const db1 = await newTestDb(file);
+  const app1 = await start({}, db1);
   const c1 = await signup(app1, "persist@a.com", "Persistente");
   await say(c1, "Recebi 3000 de salário");
   await say(c1, "Gastei 47 no mercado");
   await say(c1, "Amanhã às 8 me lembra de pagar a conta");
   const cookie = c1.cookie;
   await app1.close();
-  app1.db.close();
+  await app1.db.close();
 
   // "reinicia": abre o mesmo arquivo em uma nova instância
-  const app2 = await start({}, openDb(file));
+  const app2 = await start({}, await reopenTestDb(db1, file));
   const c2 = new Client(app2.url);
   c2.cookie = cookie; // a sessão também persiste
   const dash = await c2.get("/api/dashboard");
@@ -385,7 +389,7 @@ test("PERSISTÊNCIA: dados sobrevivem a reiniciar o servidor", async () => {
   const login = await new Client(app2.url).post("/api/auth/login", { email: "persist@a.com", password: "senha-segura-123" });
   assert.equal(login.status, 200);
   await app2.close();
-  app2.db.close();
+  await app2.db.close();
 });
 
 test("sessão expira", async () => {
@@ -393,7 +397,7 @@ test("sessão expira", async () => {
   const c = await signup(app, "exp@a.com");
   assert.equal((await c.get("/api/me")).status, 200);
   const { run } = await import("./db/index.js");
-  run(app.db, "UPDATE sessions SET expires_at = '2020-01-01T00:00:00.000Z'");
+  await run(app.db, "UPDATE sessions SET expires_at = '2020-01-01T00:00:00.000Z'");
   assert.equal((await c.get("/api/me")).status, 401);
   await app.close();
 });

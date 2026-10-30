@@ -24,7 +24,7 @@ export interface Tool {
   description: string;
   /** JSON Schema enviado ao modelo. */
   input_schema: Record<string, unknown>;
-  run(ctx: Ctx, input: unknown): ToolResult;
+  run(ctx: Ctx, input: unknown): Promise<ToolResult>;
 }
 
 /** Funcionalidades previstas no roadmap que ainda NÃO existem. Respondemos honestamente em vez de simular. */

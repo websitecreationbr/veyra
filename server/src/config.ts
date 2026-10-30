@@ -2,7 +2,10 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 
-const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+// Pasta "server". (No pacote da Vercel o import.meta.url é fornecido pelo build; se faltar, usa o diretório atual.)
+const root = (() => {
+  try { return resolve(fileURLToPath(new URL("..", import.meta.url))); } catch { return resolve(process.cwd(), "server"); }
+})();
 
 // Carrega server/.env (formato KEY=VALUE) sem dependências. Variáveis já definidas no ambiente têm prioridade.
 function loadDotEnv(file: string): void {
@@ -25,6 +28,11 @@ export const config = {
   httpsMode: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "1" : isProd,
   port: Number(process.env.PORT ?? 8787),
   dataDir: resolve(process.env.VEYRA_DATA_DIR ?? resolve(root, ".data")),
+  /** PostgreSQL de produção (ex.: Neon/Supabase/Vercel Postgres). Sem isso, usa SQLite local. */
+  databaseUrl: process.env.DATABASE_URL || process.env.POSTGRES_URL || "",
+  /** "disable" | "no-verify" — só se o seu provedor exigir; o padrão (verificar certificado) é o mais seguro. */
+  databaseSsl: process.env.DATABASE_SSL ?? "",
+  pgPoolMax: Number(process.env.PG_POOL_MAX ?? 3),
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
   anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5",
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),

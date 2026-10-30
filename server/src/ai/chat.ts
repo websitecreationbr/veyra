@@ -49,8 +49,9 @@ const chip = (e: ExecutedCall): ActionChip => ({
   record: e.result.record,
 });
 
-function runPlan(ctx: Ctx, plan: Plan): { text: string; executed: ExecutedCall[] } {
-  const executed: ExecutedCall[] = plan.calls.map((c) => ({ name: c.name, input: c.input, result: executeTool(ctx, c.name, c.input) as ToolResult }));
+async function runPlan(ctx: Ctx, plan: Plan): Promise<{ text: string; executed: ExecutedCall[] }> {
+  const executed: ExecutedCall[] = [];
+  for (const c of plan.calls) executed.push({ name: c.name, input: c.input, result: (await executeTool(ctx, c.name, c.input)) as ToolResult });
   if (plan.reply && !executed.length && !plan.ask && !plan.planned.length) return { text: plan.reply, executed };
   const text = composeReply(executed, { planned: plan.planned, notes: plan.reply ? [plan.reply] : [], ask: plan.ask?.question });
   return { text, executed };
@@ -61,9 +62,9 @@ export async function handleChat(ctx: Ctx, rawText: string, deps: ChatDeps): Pro
   if (!text) throw bad("Escreva algo para a Veyra.");
   if (text.length > 2000) throw bad("Mensagem muito longa (máximo 2000 caracteres).");
 
-  const pending = lastPending(ctx);
-  const prior = history(ctx, 12);
-  const user = saveMessage(ctx, { role: "user", text });
+  const pending = await lastPending(ctx);
+  const prior = await history(ctx, 12);
+  const user = await saveMessage(ctx, { role: "user", text });
 
   let reply = "";
   let executed: ExecutedCall[] = [];
@@ -92,14 +93,14 @@ export async function handleChat(ctx: Ctx, rawText: string, deps: ChatDeps): Pro
 
   if (provider === "local" && !executed.length) {
     const plan = interpret(text, ctx.now, pending);
-    const r = runPlan(ctx, plan);
+    const r = await runPlan(ctx, plan);
     reply = r.text;
     executed = r.executed;
     pendingOut = plan.ask?.pending ?? null;
     if (degraded) reply += "\n\n(A IA em nuvem está indisponível agora; usei o modo local.)";
   }
 
-  const assistant = saveMessage(ctx, { role: "assistant", text: reply, actions: executed.map(chip), pending: pendingOut });
+  const assistant = await saveMessage(ctx, { role: "assistant", text: reply, actions: executed.map(chip), pending: pendingOut });
   return { user, assistant, provider, degraded };
 }
 

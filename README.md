@@ -6,7 +6,7 @@ Assistente pessoal conversacional: você escreve “gastei 47 no mercado” ou �
 
 ## Instalação rápida
 
-Requisitos: **Node.js 22.13 ou superior** (o banco usa o SQLite nativo do Node — não há nada para compilar) e npm.
+Requisitos: **Node.js 22.13 ou superior** (localmente o banco é o SQLite nativo do Node — não há nada para compilar) e npm. **Em produção (Vercel) o banco é PostgreSQL** — veja “Publicar na Vercel” abaixo.
 
 ```bash
 npm install
@@ -25,21 +25,67 @@ Em produção os cookies são `Secure` (exigem HTTPS). Para testar `npm start` e
 
 ### Configuração (`server/.env`)
 
-Copie `server/.env.example` para `server/.env`. **Tudo é opcional** — sem nenhuma variável o app funciona com o interpretador local.
+Copie `server/.env.example` para `server/.env`. **Localmente tudo é opcional** — sem nenhuma variável o app funciona com SQLite e o interpretador local. Na Vercel, `DATABASE_URL` é **obrigatória**.
 
 | Variável | Para quê |
 |---|---|
 | `ANTHROPIC_API_KEY` | Liga a IA em nuvem (Claude). Fica **só no servidor**, nunca vai ao navegador. |
 | `ANTHROPIC_MODEL` | Modelo usado (padrão `claude-sonnet-5-5`). |
-| `PORT`, `VEYRA_DATA_DIR` | Porta e pasta do banco. |
+| `DATABASE_URL` | Endereço do PostgreSQL (`postgres://usuario:senha@host:5432/banco`). **Se definida, o app usa PostgreSQL**; se não, usa SQLite local. Obrigatória na Vercel. |
+| `DATABASE_SSL` | Opcional: `disable` ou `no-verify`. O padrão (verificar o certificado) é o correto para Neon, Supabase, Vercel Postgres etc. |
+| `PG_POOL_MAX` | Opcional: conexões por instância (padrão 3). |
+| `PORT`, `VEYRA_DATA_DIR` | Porta e pasta do banco SQLite local. |
 | `ALLOWED_ORIGINS`, `TRUST_PROXY`, `COOKIE_SECURE` | Ajustes de deploy (ver `.env.example`). |
+
+### Banco de dados: SQLite (local) × PostgreSQL (produção)
+
+- **Por que não SQLite em produção?** Na Vercel não há processo contínuo nem disco permanente: um arquivo `.db` seria apagado a cada nova instância da função. Por isso a produção usa **PostgreSQL hospedado**.
+- O mesmo código roda nos dois (`server/src/db/`): `DATABASE_URL` definida → PostgreSQL; senão → SQLite em `server/.data/veyra.db`. O SQL é escrito de forma portável (parâmetros `?`, `ON CONFLICT`, sem `rowid`).
+- **Migrações** rodam sozinhas ao iniciar (e com `npm run migrate`). SQLite: `db/migrations.ts` (controle por `PRAGMA user_version`); PostgreSQL: `db/migrations.pg.ts` (tabela `schema_migrations`, com trava para duas instâncias não migrarem juntas). **Ao criar uma migração, adicione-a nos dois arquivos, com o mesmo número.**
+- Bancos SQLite já existentes são atualizados sem perder dados (testado).
+- Migrar dados antigos do SQLite local para o PostgreSQL **não é automático**: contas criadas só no seu computador não aparecem no site publicado (o banco da produção começa vazio — é só se cadastrar de novo).
 
 ### Testes
 
 ```bash
-npm test             # 43 testes: interpretador, API ponta a ponta, isolamento, persistência, segurança
+npm test                                   # SQLite: interpretador, API ponta a ponta, isolamento, persistência, segurança, fluxo principal
+TEST_DATABASE_URL=postgres://usuario@localhost:5432/banco_de_teste npm test   # os mesmos testes em PostgreSQL real
 npm run typecheck
+npm run check:api                          # confere se a função da Vercel (api/) está em dia com o código
 ```
+Com `TEST_DATABASE_URL`, cada teste cria um *schema* próprio e o apaga no fim (use um banco **de teste**, nunca o de produção).
+
+---
+
+## Publicar na Vercel (passo a passo)
+
+O repositório já vem pronto: `vercel.json` (site estático de `web/dist` + rotas), `api/[...path].js` (a API inteira como função da Vercel) e `scripts/build-api.mjs` (que gera essa função).
+
+**1. Crie um banco PostgreSQL** (grátis serve). Opções: *Vercel → Storage → Create Database → Neon (Postgres)*, ou Neon/Supabase direto. Copie a **connection string** (`postgres://…`). Use a versão *pooled*/“pooler” se houver as duas.
+
+**2. Configure as variáveis na Vercel**: *Projeto → Settings → Environment Variables* e adicione, para **Production** (e Preview, se usar):
+
+| Nome | Valor | Obrigatória |
+|---|---|---|
+| `DATABASE_URL` | a connection string do passo 1 | **sim** |
+| `ANTHROPIC_API_KEY` | sua chave da Anthropic (liga a IA em nuvem) | não |
+
+Se você criou o banco pela aba *Storage* da própria Vercel, ela já cria `POSTGRES_URL`, que o app também aceita.
+
+**3. Confira as configurações do projeto** (*Settings → General*): **Root Directory** vazio (a raiz do repositório, **não** `web`); **Framework Preset: Other**; Build/Output/Install vêm do `vercel.json`. Node.js 22.x ou 24.x.
+
+**4. Envie esta versão** para o mesmo projeto: substitua os arquivos do repositório ligado à Vercel por este pacote (ou rode `npx vercel --prod` na pasta). Faça um novo deploy (*Deployments → Redeploy*, **sem** usar o cache de build).
+
+**5. Verifique** (troque pelo seu endereço):
+1. Abra `https://SEU-SITE.vercel.app/api/health` → deve mostrar `{"ok":true,"db":"postgres"}`.
+   - `503 banco_nao_configurado` → faltou `DATABASE_URL` (passo 2; depois faça Redeploy).
+   - `503 banco_indisponivel` → a connection string está errada ou o banco está fora do ar; veja os logs (abaixo).
+   - Página/erro HTML ou 404 → a pasta `api/` não foi publicada ou o Root Directory está errado (passo 3).
+2. Abra o site, **crie uma conta**, registre “Gastei 47 no mercado”, pergunte “qual é o meu saldo?”, **saia**, **entre de novo** e confira que os dados continuam.
+
+**Onde ver os erros reais:** *Vercel → seu projeto → Logs* (filtre por “Function”/`/api`). Os erros da API aparecem como `[veyra] …`. No navegador: F12 → aba *Network* → clique na chamada `register` e veja *Status* e *Response*.
+
+**Depois de mudar o código em `server/src`**: rode `npm run build:api` e envie também o arquivo `api/[...path].js` atualizado (a Vercel só detecta funções pelos arquivos enviados).
 
 ---
 
@@ -98,7 +144,8 @@ mensagem ─► handleChat ─┬─ Claude (tool-use)   ← com ANTHROPIC_API_K
 server/src/
   ai/         tools.ts (as funções da IA) · local.ts · claude.ts · chat.ts · planned.ts (o que ainda não existe)
   services/   auth · finance · agenda · habits · messages · dashboard   (toda query filtra por user_id)
-  db/         migrations.ts (adicione uma migração nova ao final — nunca edite as antigas)
+  db/         index.ts (abre SQLite ou PostgreSQL) · migrations.ts (SQLite) · migrations.pg.ts (PostgreSQL) — nunca edite migrações antigas
+  vercel.ts   função serverless (empacotada em api/[...path].js pelo scripts/build-api.mjs)
   http/       servidor, cookies, CSRF, limites de taxa, cabeçalhos de segurança
   routes/     rotas da API
   demo/       dados de demonstração (isolados)
@@ -123,7 +170,7 @@ web/src/
 - **Isolamento**: todas as consultas filtram por `user_id`; acessar registro de outra conta devolve 404 (testado com duas contas).
 - Entrada validada em toda a API e nas funções da IA; valores em centavos (inteiros); limites de tamanho de corpo e de taxa; CSP e demais cabeçalhos.
 - A chave da Anthropic existe **apenas** no servidor; `/api/me` informa só “claude” ou “local”.
-- Limitador de taxa é em memória (uma instância). Para várias instâncias, troque por Redis mantendo a interface de `http/rateLimit.ts`.
+- Limites de login, cadastro e conversa ficam **no banco** (valem para todas as instâncias, essencial na Vercel). O limite geral da API é em memória, por instância.
 
 ## Limitações conhecidas
 
@@ -133,6 +180,7 @@ web/src/
 - Sem service worker/offline ainda: o `manifest` está pronto para virar PWA, mas instalar como app e notificações ficam para a Fase 6.
 - Tema escuro não implementado (a direção visual é base clara).
 - A fonte (Hanken Grotesk) vem do Google Fonts; sem internet, cai para a fonte do sistema.
+- **A publicação real na Vercel não pôde ser testada daqui** (sem acesso à sua conta). O que foi testado: o pacote da função gerado (`api/`) rodando num processo Node separado, do mesmo jeito que a Vercel o carrega, contra um PostgreSQL 16 real. Ficaram sem teste: o comportamento da plataforma Vercel em si e o driver `pg` oficial (o ambiente de testes não tinha acesso ao npm; os testes usam um cliente de protocolo PostgreSQL próprio, só de teste).
 - Este pacote foi validado no ambiente de desenvolvimento com bundler alternativo (esbuild + React local) porque o registro do npm estava bloqueado: **`npm install` e `npm run build` (Vite) não puderam ser executados aqui.** O código segue a configuração padrão do Vite; se algo falhar na sua máquina, me envie a mensagem de erro.
 
 ## Roadmap
