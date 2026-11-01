@@ -43,18 +43,74 @@ export function fromOpenAiResponse(json: any): LlmResponse {
   return { content, stop_reason: String(choice?.finish_reason ?? "stop") };
 }
 
+
 export function openAiCompatibleLlm(o: { baseUrl: string; apiKey: string; model: string; fetchImpl?: typeof fetch; headers?: Record<string, string> }): Llm {
   const f = o.fetchImpl ?? fetch;
   const url = o.baseUrl.replace(/\/+$/, "") + "/chat/completions";
+
   return async ({ system, messages, tools }) => {
-    const oaiTools = (tools as { name: string; description: string; input_schema: unknown }[]).map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } }));
-    const res = await f(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${o.apiKey}`, ...(o.headers ?? {}) },
-      body: JSON.stringify({ model: o.model, messages: toOpenAiMessages(system, messages), tools: oaiTools, tool_choice: "auto", temperature: 0.6, max_tokens: 1024 }),
-      signal: AbortSignal.timeout(28_000),
+    const oaiTools = (tools as { name: string; description: string; input_schema: unknown }[])
+      .map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema
+        }
+      }));
+
+    const body = JSON.stringify({
+      model: o.model,
+      messages: toOpenAiMessages(system, messages),
+      tools: oaiTools,
+      tool_choice: "auto",
+      temperature: 0.6,
+      max_tokens: 1024
     });
-    if (!res.ok) throw new Error(`Provedor de IA respondeu ${res.status}`); // o corpo pode conter detalhes: não é repassado ao usuário
-    return fromOpenAiResponse(await res.json());
+
+    const maxAttempts = 3;
+    const retryableStatuses = [429, 500, 502, 503, 504];
+    const deadline = Date.now() + 28000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const remaining = deadline - Date.now();
+
+      if (remaining <= 0) {
+        throw new Error("Tempo limite da IA esgotado");
+      }
+
+      const res = await f(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${o.apiKey}`,
+          ...(o.headers ?? {})
+        },
+        body,
+        signal: AbortSignal.timeout(remaining)
+      });
+
+      if (res.ok) {
+        return fromOpenAiResponse(await res.json());
+      }
+
+      if (
+        !retryableStatuses.includes(res.status) ||
+        attempt === maxAttempts
+      ) {
+        throw new Error(`Provedor de IA respondeu ${res.status}`);
+      }
+
+      const delay = Math.min(
+        1000 * Math.pow(2, attempt - 1),
+        Math.max(0, deadline - Date.now() - 1000)
+      );
+
+      if (delay > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw new Error("Provedor de IA indisponível");
   };
 }
