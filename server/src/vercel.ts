@@ -5,7 +5,8 @@ import { config } from "./config.js";
 import { openDb, type Db } from "./db/index.js";
 import { createHandler } from "./http/app.js";
 import "./routes/index.js";
-import { anthropicLlm } from "./ai/claude.js";
+import { DEFAULT_APP_ORIGINS } from "./http/app.js";
+import { createMarketService } from "./services/market.js";
 import { systemClock } from "./util/time.js";
 
 type Handle = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -17,9 +18,11 @@ function boot(): Promise<Handle> {
       throw new Error("DATABASE_URL não está configurada. Crie um banco PostgreSQL e defina a variável na Vercel (veja o README).");
     }
     const db: Db = await openDb({ databaseUrl: config.databaseUrl, ssl: config.databaseSsl, poolMax: config.pgPoolMax });
-    const llm = config.anthropicKey ? anthropicLlm(config.anthropicKey, config.anthropicModel) : undefined;
+    const llm = config.ai?.llm;
+    const market = createMarketService({ clock: systemClock, brapiToken: config.brapiToken, awesomeToken: config.awesomeToken });
     const { handle } = createHandler({
-      db, clock: systemClock, llm,
+      db, clock: systemClock, llm, market,
+      appOrigins: [...DEFAULT_APP_ORIGINS, ...config.appOrigins],
       isProd: true, // na Vercel é sempre HTTPS: cookie Secure + HSTS
       allowedOrigins: config.allowedOrigins,
       trustProxy: true, // atrás da Vercel o IP real vem em x-forwarded-for

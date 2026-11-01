@@ -1,17 +1,31 @@
+import { apiBase, getToken, isNativeApp } from "./config";
+import { deviceCapabilities } from "./native";
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public code = "erro") {
     super(message);
   }
 }
 
-/** Todas as chamadas passam por aqui: cookie de sessão (HttpOnly) + cabeçalho anti-CSRF. Nenhuma chave de API existe no front. */
+/**
+ * Todas as chamadas passam por aqui. Site: cookie de sessão (HttpOnly) + cabeçalho anti-CSRF.
+ * App Android: token Bearer + declaração dos recursos do aparelho. Nenhuma chave de API existe no front.
+ */
 export async function api<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, {
+    const native = isNativeApp();
+    const token = getToken();
+    const caps = native ? deviceCapabilities() : [];
+    res = await fetch(apiBase() + path, {
       method,
-      credentials: "same-origin",
-      headers: { "x-requested-with": "veyra", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      credentials: native ? "omit" : "same-origin",
+      headers: {
+        "x-requested-with": "veyra",
+        ...(native ? { "x-veyra-client": "app", ...(caps.length ? { "x-veyra-capabilities": caps.join(",") } : {}) } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {

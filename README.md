@@ -114,14 +114,20 @@ Aparece na tela **Mais → Ainda não disponível** e na resposta da Veyra quand
 
 | Recurso | Fase | Depende de |
 |---|---|---|
-| Ibovespa, dólar, ações, watchlist | 5 | API de cotações (ex.: brapi.dev) + chave no servidor |
+| Ações individuais, euro, bitcoin, watchlist | 5 | Dólar e Ibovespa **já existem** (2.0). O resto precisa de mais fontes de cotação |
 | Alertas de mercado | 5 | A API acima + monitor em segundo plano |
 | Treinos (carga/séries/evolução) | 4 | Ferramentas de IA (as tabelas já existem). Hoje “treinei” marca o **hábito** Treino. |
 | WhatsApp | 6 | WhatsApp Business Cloud API + webhook público |
-| Voz | 6 | Serviço de transcrição (o botão de microfone avisa que ainda não funciona) |
+| Voz | — | **Já existe no app Android e no Chrome** (microfone + resposta falada) — veja `docs/ANDROID.md` |
 | Notificações push | 6 | PWA com Web Push (VAPID) + agendador. **Lembretes ficam salvos e aparecem na Agenda, mas ainda não “tocam” no horário.** |
-| Calendário externo | 6 | OAuth Google/Apple |
+| Calendário Google/Apple direto (nuvem) | 6 | OAuth. O calendário **do celular** já funciona no app Android |
 | Resumos automáticos manhã/noite | 6 | Agendador. (Por enquanto: “resumo do dia” responde na hora.) |
+
+## VEYRA AI 2.0 — app Android
+
+O mesmo site e a mesma API viram um app instalável (Capacitor), com a **mesma conta e o mesmo banco (Neon)**.
+Conversa com IA real (provedores gratuitos), microfone, resposta falada, alarmes, calendário do celular e cotações reais de dólar/Ibovespa.
+**Guia completo (compilar o APK, instalar no Galaxy A16, permissões, limites, o que foi e o que NÃO foi testado): [`docs/ANDROID.md`](docs/ANDROID.md).**
 
 ## Dois "cérebros", mesma execução
 

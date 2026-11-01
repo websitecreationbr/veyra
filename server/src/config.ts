@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
+import { resolveAi } from "./ai/provider.js";
 
 // Pasta "server". (No pacote da Vercel o import.meta.url é fornecido pelo build; se faltar, usa o diretório atual.)
 const root = (() => {
@@ -33,8 +34,11 @@ export const config = {
   /** "disable" | "no-verify" — só se o seu provedor exigir; o padrão (verificar certificado) é o mais seguro. */
   databaseSsl: process.env.DATABASE_SSL ?? "",
   pgPoolMax: Number(process.env.PG_POOL_MAX ?? 3),
-  anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
-  anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5",
+  /** Provedor de IA (gratuito: Gemini/Groq/OpenRouter; pago opcional: Anthropic). Ver ai/provider.ts. */
+  ai: resolveAi(process.env),
+  brapiToken: process.env.BRAPI_TOKEN ?? "",
+  awesomeToken: process.env.AWESOMEAPI_TOKEN ?? "",
+  appOrigins: (process.env.APP_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   trustProxy: process.env.TRUST_PROXY === "1",
   webDist: resolve(root, "../web/dist"),

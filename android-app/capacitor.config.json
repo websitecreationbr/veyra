@@ -1,0 +1,8 @@
+{
+  "appId": "com.veyra.ai",
+  "appName": "VEYRA AI",
+  "webDir": "../web/dist",
+  "android": { "allowMixedContent": false },
+  "server": { "androidScheme": "https" },
+  "plugins": { "SystemBars": { "insetsHandling": "css" } }
+}

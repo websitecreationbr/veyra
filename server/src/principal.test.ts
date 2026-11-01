@@ -19,11 +19,29 @@ const clock = { now: () => new Date("2026-10-27T16:52:00Z") };
 const tmp = mkdtempSync(join(tmpdir(), "veyra-principal-"));
 const servers = new Set<Server>();
 after(async () => {
-  for (const s of servers) { s.closeAllConnections(); s.close(); }
-  await dropTestSchemas();
-  rmSync(tmp, { recursive: true, force: true });
-});
+  await Promise.all(
+    [...servers].map(
+      (s) =>
+        new Promise<void>((resolve) => {
+          if (!s.listening) {
+            resolve();
+            return;
+          }
+          s.closeAllConnections();
+          s.close(() => resolve());
+        }),
+    ),
+  );
 
+  await dropTestSchemas();
+
+  rmSync(tmp, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 200,
+  });
+});
 async function boot(db: DB) {
   const { server } = createApp({ db, clock, isProd: false, allowedOrigins: [], trustProxy: false, sessionDays: 30 });
   servers.add(server);
@@ -167,12 +185,14 @@ test(`[${DIALECT}] persistência: reiniciar o servidor mantém conta, sessão e 
   await app1.close();
   await db1.close();
 
-  const app2 = await boot(await reopenTestDb(db1, file));
+ const db2 = await reopenTestDb(db1, file);
+const app2 = await boot(db2);
   const b2 = new Browser(app2.url); b2.cookie = b.cookie;
   assert.equal((await b2.call("GET", "/api/dashboard")).json.balanceCents, 290000);
   const l = await new Browser(app2.url).call("POST", "/api/auth/login", { email: "p@a.com", password: "senha-segura-123" });
   assert.equal(l.status, 200);
   await app2.close();
+  await db2.close();
 });
 
 test(`[${DIALECT}] dois usuários: cada um vê só os próprios dados`, async () => {

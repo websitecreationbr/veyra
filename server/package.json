@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "seed": "tsx src/demo/cli.ts",
-    "migrate": "tsx src/db/cli.ts"
+    "migrate": "tsx src/db/cli.ts",
+    "check:live": "tsx src/tools/check-live.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

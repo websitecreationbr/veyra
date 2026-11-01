@@ -5,10 +5,12 @@ import * as ag from "../services/agenda.js";
 import * as hb from "../services/habits.js";
 import { brl, brlShort, parseBrMoney, reaisToCents } from "../util/money.js";
 import {
-  PERIODS, addDays, describeRecurrence, humanDate, humanDateInline, isDate, isRecurrence, isTime, periodRange, startOfWeek, type Period,
+  PERIODS, addDays, daysBetween, describeRecurrence, humanDate, humanDateInline, isDate, isRecurrence, isTime, periodRange, startOfWeek, type Period,
 } from "../util/time.js";
 import { HttpError, asObject, bad, oneOf, reqStr, str } from "../util/validate.js";
 import { norm } from "../util/text.js";
+import { MarketError, ASSETS, describeMarket, type Asset, type MarketDetail } from "../services/market.js";
+import type { DeviceResult } from "./types.js";
 
 // ---------- helpers de entrada ----------
 type Obj = Record<string, unknown>;
@@ -385,15 +387,250 @@ const consultarHabitos: Tool = {
   },
 };
 
+// ---------- Mercado financeiro (dados reais, com fonte e horário) ----------
+const MARKET_DETAILS = ["cotacao", "variacao", "ontem", "historico"] as const;
+const consultarMercado: Tool = {
+  name: "consultar_mercado",
+  description:
+    "Consulta a cotação REAL do dólar comercial (ativo=dolar) ou do Ibovespa (ativo=ibovespa): valor, variação do dia, fechamento anterior e histórico recente, com data/hora e fonte. Use para 'quanto está o dólar', 'o Ibovespa subiu?', 'e ontem?'. Só existem esses dois ativos; para outros (ações, euro, bitcoin, Selic) diga que ainda não há suporte.",
+  input_schema: {
+    type: "object",
+    properties: {
+      ativo: { type: "string", enum: ["dolar", "ibovespa"] },
+      detalhe: { type: "string", enum: [...MARKET_DETAILS], description: "cotacao (padrão) | variacao (subiu/caiu hoje, %) | ontem | historico (últimos dias)" },
+    },
+    required: ["ativo"],
+  },
+  async run(ctx, input) {
+    const o = asObject(input, "entrada");
+    const ativo = oneOf(o, "ativo", ASSETS);
+    const detalhe = (oneOf(o, "detalhe", MARKET_DETAILS, true) ?? "cotacao") as MarketDetail;
+    if (!ctx.market) return { ok: false, mode: "read", text: "A consulta de mercado não está ativada neste servidor." };
+    try {
+      const snap = await ctx.market.get(ativo as Asset);
+      const q = snap.quote;
+      return {
+        ok: true, mode: "read",
+        text: describeMarket(snap, detalhe),
+        data: {
+          ativo: q.label, valor: q.value, unidade: q.unit, variacao_pct: q.changePct, variacao_abs: q.changeAbs,
+          fechamento_anterior: q.previousClose, data_fechamento_anterior: q.previousDate,
+          atualizado_em: q.asOf, fonte: q.source, aviso_de_atraso: q.delayNote, tempo_real: !q.stale,
+          historico: snap.history.slice(-6),
+        },
+      };
+    } catch (e) {
+      if (e instanceof MarketError) return { ok: false, mode: "read", text: e.message + " Tente novamente em instantes." };
+      throw e;
+    }
+  },
+};
+
+// ---------- Ferramentas do APARELHO (alarme e calendário) ----------
+// O servidor só VALIDA e ENVIA o pedido; quem executa é o app Android, com a permissão do usuário. O resultado volta
+// do aparelho e só então a Veyra afirma algo. A IA não consegue pedir ações fora desta lista.
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+const DIAS = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
+const fmtEv = (e: { title?: unknown; start?: unknown; end?: unknown; location?: unknown; allDay?: unknown; id?: unknown }) => {
+  const s = String(e.start ?? ""), en = String(e.end ?? "");
+  const day = s.slice(0, 10), t = s.slice(11, 16);
+  const when = e.allDay ? "dia inteiro" : `${t}${en.length >= 16 && en.slice(0, 10) === day ? `–${en.slice(11, 16)}` : ""}`;
+  return `${day.slice(8)}/${day.slice(5, 7)} · ${when} · ${String(e.title ?? "(sem título)").slice(0, 80)}${e.location ? ` (${String(e.location).slice(0, 60)})` : ""}`;
+};
+const deviceFail = (r: DeviceResult, what: string): { ok: false; mode: "write"; text: string } => ({
+  ok: false, mode: "write",
+  text:
+    r.cancelled ? `${what}: você cancelou, então nada foi feito.`
+    : r.error === "permissao_negada" ? `${what}: o Android negou a permissão. Libere em Configurações → Apps → Veyra AI → Permissões e peça de novo.`
+    : r.error === "sem_app" ? `${what}: não encontrei um aplicativo no celular para isso.`
+    : r.error === "indisponivel" ? `${what}: este recurso não está disponível neste aparelho.`
+    : `${what}: não consegui concluir no aparelho${typeof r.error === "string" ? ` (${r.error.slice(0, 80)})` : ""}.`,
+});
+
+const definirAlarme: Tool = {
+  name: "definir_alarme",
+  description:
+    "Pede ao app Relógio do Android para criar um alarme (intent oficial). NÃO é possível confirmar que o alarme foi salvo nem ler alarmes existentes: diga sempre que você 'pediu ao Relógio'. Converta o horário para 24h (ex.: 'quatro da tarde' = 16:00). Se o período do dia for ambíguo ('às 4'), PERGUNTE antes de chamar.",
+  input_schema: {
+    type: "object",
+    properties: {
+      hora: { type: "string", description: "HH:mm em 24h." },
+      rotulo: { type: "string", description: "Nome do alarme (opcional)." },
+      dias: { type: "array", items: { type: "string", enum: ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"] }, description: "Repetição semanal (opcional)." },
+    },
+    required: ["hora"],
+  },
+  async run() { return { ok: false, mode: "write", text: "Este recurso só funciona no aplicativo Android." }; },
+  device: {
+    capability: "alarm", action: "alarm.set",
+    prepare(_ctx, input) {
+      const o = asObject(input, "entrada");
+      const hora = reqStr(o, "hora", { max: 5 });
+      if (!isTime(hora)) throw bad("Horário inválido (use HH:mm).");
+      const dias = Array.isArray(o.dias) ? o.dias : [];
+      if (dias.some((d) => typeof d !== "string" || !DIAS.includes(d))) throw bad("Dias inválidos.");
+      return { hora, minutos: toMin(hora), rotulo: (str(o, "rotulo", { optional: true, max: 60 }) ?? "").trim(), dias: [...new Set(dias as string[])] };
+    },
+    describe(_ctx, p, r) {
+      if (!r.ok) return deviceFail(r, `Alarme das ${p.hora}`);
+      return {
+        ok: true, mode: "write",
+        text: `Pedi ao app Relógio para criar o alarme das ${p.hora}${(p.dias as string[]).length ? ` (${(p.dias as string[]).join(", ")})` : ""}. O Android pode pedir sua confirmação lá — não consigo verificar se ele foi salvo.`,
+        line: `⏰ Alarme das ${p.hora} solicitado ao Relógio`,
+        data: { status: "solicitado_ao_relogio", hora: p.hora },
+      };
+    },
+  },
+};
+
+const calEvents = (r: DeviceResult) => (Array.isArray(r.events) ? (r.events as Record<string, unknown>[]) : []);
+const datePair = (o: Obj) => {
+  const de = reqStr(o, "de", { max: 10 }), ate = str(o, "ate", { optional: true, max: 10 }) ?? de;
+  if (!isDate(de) || !isDate(ate) || ate < de) throw bad("Período inválido.");
+  if (daysBetween(de, ate) > 62) throw bad("Período grande demais (máximo ~2 meses).");
+  return { de, ate };
+};
+
+const consultarCalendario: Tool = {
+  name: "consultar_calendario",
+  description: "Lê os eventos do calendário do CELULAR (permissão do usuário) entre duas datas. Use para 'o que tenho amanhã?', 'tenho algo às 16h?' e para achar o id de um evento antes de alterar/excluir.",
+  input_schema: { type: "object", properties: { de: { type: "string", description: "AAAA-MM-DD" }, ate: { type: "string", description: "AAAA-MM-DD (opcional; padrão = de)" } }, required: ["de"] },
+  async run() { return { ok: false, mode: "read", text: "Este recurso só funciona no aplicativo Android." }; },
+  device: {
+    capability: "calendar", action: "calendar.query",
+    prepare(_ctx, input) { return datePair(asObject(input, "entrada")); },
+    describe(ctx, p, r) {
+      if (!r.ok) return { ...deviceFail(r, "Consulta ao calendário"), mode: "read" };
+      const ev = calEvents(r);
+      const span = p.de === p.ate ? humanDate(String(p.de), ctx.now.date) : `${p.de} a ${p.ate}`;
+      return {
+        ok: true, mode: "read",
+        text: ev.length ? `No calendário do celular (${span}):\n${ev.slice(0, 20).map(fmtEv).join("\n")}${r.truncated ? "\n… (há mais eventos)" : ""}` : `Não há eventos no calendário do celular (${span}).`,
+        data: { periodo: span, eventos: ev.slice(0, 30), truncado: !!r.truncated },
+      };
+    },
+  },
+};
+
+const criarEventoCalendario: Tool = {
+  name: "criar_evento_calendario",
+  description: "Cria um evento no calendário do CELULAR. O aparelho verifica conflitos de horário: se houver, NADA é criado e os conflitos voltam — pergunte ao usuário e, se ele confirmar, chame de novo com ignorar_conflito=true.",
+  input_schema: {
+    type: "object",
+    properties: {
+      titulo: { type: "string" }, data: { type: "string", description: "AAAA-MM-DD" }, hora: { type: "string", description: "HH:mm (24h)" },
+      duracao_min: { type: "integer", description: "Padrão 60." }, hora_fim: { type: "string", description: "HH:mm (alternativa à duração)" },
+      local: { type: "string" }, notas: { type: "string" }, ignorar_conflito: { type: "boolean" },
+    },
+    required: ["titulo", "data", "hora"],
+  },
+  async run() { return { ok: false, mode: "write", text: "Este recurso só funciona no aplicativo Android." }; },
+  device: {
+    capability: "calendar", action: "calendar.create",
+    prepare(_ctx, input) {
+      const o = asObject(input, "entrada");
+      const data = reqStr(o, "data", { max: 10 }), hora = reqStr(o, "hora", { max: 5 });
+      if (!isDate(data)) throw bad("Data inválida.");
+      if (!isTime(hora)) throw bad("Horário inválido (use HH:mm).");
+      let dur = typeof o.duracao_min === "number" ? Math.round(o.duracao_min) : 60;
+      const fim = str(o, "hora_fim", { optional: true, max: 5 });
+      if (fim !== undefined) {
+        if (!isTime(fim) || toMin(fim) <= toMin(hora)) throw bad("Horário final inválido.");
+        dur = toMin(fim) - toMin(hora);
+      }
+      if (dur < 5 || dur > 1440) throw bad("Duração inválida.");
+      return { titulo: reqStr(o, "titulo", { max: 140 }).trim(), data, hora, duracao_min: dur, local: (str(o, "local", { optional: true, max: 120 }) ?? "").trim(), notas: (str(o, "notas", { optional: true, max: 500 }) ?? "").trim(), ignorar_conflito: o.ignorar_conflito === true };
+    },
+    describe(ctx, p, r) {
+      if (r.conflict) {
+        const c = calEvents({ ok: true, events: r.conflicts });
+        return { ok: false, mode: "write", text: `Conflito de horário: já existe${c.length > 1 ? "m" : ""} no calendário:\n${c.slice(0, 5).map(fmtEv).join("\n")}\nNada foi criado. Quer marcar mesmo assim?`, data: { conflito: true, conflitos: c.slice(0, 5) } };
+      }
+      if (!r.ok) return deviceFail(r, `Evento “${p.titulo}”`);
+      return {
+        ok: true, mode: "write",
+        text: `${p.titulo} · ${p.hora}\n${humanDate(String(p.data), ctx.now.date)} (no calendário do celular)`,
+        line: `📅 ${p.titulo} · ${humanDateInline(String(p.data), ctx.now.date)} ${p.hora}`,
+        data: { id_evento: r.id ?? null, titulo: p.titulo, data: p.data, hora: p.hora },
+      };
+    },
+  },
+};
+
+const atualizarEventoCalendario: Tool = {
+  name: "atualizar_evento_calendario",
+  description: "Altera título, data ou horário de um evento do calendário do CELULAR. Obtenha antes o id_evento com consultar_calendario.",
+  input_schema: {
+    type: "object",
+    properties: { id_evento: { type: "string" }, titulo: { type: "string" }, data: { type: "string" }, hora: { type: "string" }, hora_fim: { type: "string" } },
+    required: ["id_evento"],
+  },
+  async run() { return { ok: false, mode: "write", text: "Este recurso só funciona no aplicativo Android." }; },
+  device: {
+    capability: "calendar", action: "calendar.update",
+    prepare(_ctx, input) {
+      const o = asObject(input, "entrada");
+      const id = reqStr(o, "id_evento", { max: 40 });
+      if (!/^\d{1,18}$/.test(id)) throw bad("Identificador de evento inválido.");
+      const out: Record<string, unknown> = { id_evento: id };
+      const titulo = str(o, "titulo", { optional: true, max: 140 });
+      const data = str(o, "data", { optional: true, max: 10 }), hora = str(o, "hora", { optional: true, max: 5 }), fim = str(o, "hora_fim", { optional: true, max: 5 });
+      if (data !== undefined && !isDate(data)) throw bad("Data inválida.");
+      if (hora !== undefined && !isTime(hora)) throw bad("Horário inválido.");
+      if (fim !== undefined && !isTime(fim)) throw bad("Horário final inválido.");
+      if (titulo === undefined && data === undefined && hora === undefined && fim === undefined) throw bad("Diga o que mudar.");
+      Object.assign(out, titulo !== undefined && { titulo: titulo.trim() }, data !== undefined && { data }, hora !== undefined && { hora }, fim !== undefined && { hora_fim: fim });
+      return out;
+    },
+    describe(_ctx, p, r) {
+      if (!r.ok) return deviceFail(r, "Alteração do evento");
+      return { ok: true, mode: "write", text: "Evento atualizado no calendário do celular.", line: "📅 Evento atualizado", data: { id_evento: p.id_evento } };
+    },
+  },
+};
+
+const excluirEventoCalendario: Tool = {
+  name: "excluir_evento_calendario",
+  description: "Exclui um evento do calendário do CELULAR. O app SEMPRE pede confirmação ao usuário na tela antes de apagar. Obtenha antes o id_evento com consultar_calendario.",
+  input_schema: { type: "object", properties: { id_evento: { type: "string" }, titulo: { type: "string", description: "Título do evento (mostrado na confirmação)" } }, required: ["id_evento", "titulo"] },
+  async run() { return { ok: false, mode: "write", text: "Este recurso só funciona no aplicativo Android." }; },
+  device: {
+    capability: "calendar", action: "calendar.delete",
+    prepare(_ctx, input) {
+      const o = asObject(input, "entrada");
+      const id = reqStr(o, "id_evento", { max: 40 });
+      if (!/^\d{1,18}$/.test(id)) throw bad("Identificador de evento inválido.");
+      return { id_evento: id, titulo: reqStr(o, "titulo", { max: 140 }).trim() };
+    },
+    describe(_ctx, p, r) {
+      if (!r.ok) return deviceFail(r, `Exclusão de “${p.titulo}”`);
+      return { ok: true, mode: "write", text: `“${p.titulo}” foi excluído do calendário do celular.`, line: `🗑️ “${p.titulo}” excluído`, data: { id_evento: p.id_evento } };
+    },
+  },
+};
+
 export const TOOLS: Tool[] = [
   registrarGasto, registrarReceita, ajustarSaldo, consultarSaldo, consultarGastos, consultarReceitas, projetarSaldo,
   criarTarefa, concluirTarefa, criarLembrete, criarEvento, consultarAgenda, registrarHabito, consultarHabitos,
+  consultarMercado,
+  definirAlarme, consultarCalendario, criarEventoCalendario, atualizarEventoCalendario, excluirEventoCalendario,
 ];
 const BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
+
+/** Ferramentas oferecidas nesta conversa: as do servidor + as do aparelho que o app declarou suportar. */
+export function toolsFor(ctx: Ctx): Tool[] {
+  return TOOLS.filter((t) => !t.device || ctx.capabilities.has(t.device.capability));
+}
+
+export function getTool(name: string): Tool | undefined {
+  return BY_NAME.get(name);
+}
 
 export async function executeTool(ctx: Ctx, name: string, input: unknown): Promise<ToolResult> {
   const tool = BY_NAME.get(name);
   if (!tool) return { ok: false, mode: "read", text: `A função “${name}” não existe.` };
+  if (tool.device) return { ok: false, mode: "write", text: "Esta ação precisa ser executada no aparelho." };
   try {
     return await tool.run(ctx, input);
   } catch (e) {

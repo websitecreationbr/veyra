@@ -1,0 +1,55 @@
+# Gera o APK de teste (debug) da VEYRA AI, de graça, nos servidores do GitHub.
+# Como usar: GitHub → aba "Actions" → "Gerar APK Android" → "Run workflow".
+# Quando terminar, baixe o arquivo "veyra-ai-apk" em "Artifacts" (dentro vem o app-debug.apk).
+name: Gerar APK Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: "Endereço do site da Veyra na Vercel (ex.: https://veyra.vercel.app). Deixe vazio para digitar no app."
+        required: false
+        default: ""
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Compilar o front-end (mesmo código do site)
+        working-directory: web
+        env:
+          VITE_API_BASE: ${{ inputs.api_url }}
+        run: |
+          npm install
+          npm run build
+
+      - name: Preparar o projeto Android (Capacitor + código nativo da Veyra)
+        working-directory: android-app
+        run: |
+          npm install
+          npx cap add android
+          node scripts/android-setup.mjs
+          npx cap sync android
+          node scripts/android-setup.mjs
+
+      - name: Compilar o APK
+        working-directory: android-app/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veyra-ai-apk
+          path: android-app/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

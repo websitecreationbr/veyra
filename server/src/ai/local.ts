@@ -6,15 +6,16 @@
 import { addDays, addMonths, dayOfWeek, daysBetween, endOfMonth, isDate, type LocalNow } from "../util/time.js";
 import { parseBrMoney } from "../util/money.js";
 import { capitalize } from "../util/text.js";
+import { planSpecial, type SpecialOpts } from "./special.js";
 
 export interface PlannedCall {
   name: string;
   input: Record<string, unknown>;
 }
-export interface Pending {
-  tool: "registrar_gasto";
-  input: Record<string, unknown>;
-}
+export type Pending =
+  | { tool: "registrar_gasto"; input: Record<string, unknown> }
+  /** Alarme à espera do horário (opcoes vazio) ou de "manhã ou tarde?" (duas opções HH:mm). */
+  | { tool: "definir_alarme"; input: { opcoes: string[]; dias?: string[] } };
 export interface Plan {
   calls: PlannedCall[];
   /** Pergunta de acompanhamento (faltou informação essencial). */
@@ -449,17 +450,21 @@ function planQuery(orig: string, f: string, now: LocalNow): Plan {
     return { ...plan, calls: [{ name: "consultar_agenda", input: { periodo: p } }] };
   }
   void orig; void now;
-  return { ...plan, reply: "Ainda não entendi esse pedido. Tente algo como “quanto gastei esse mês?”, “gastei 30 no almoço” ou “marca dentista quinta às 15”. Diga “ajuda” para ver mais exemplos." };
+  return { ...plan, reply: "Ainda não entendi esse pedido. Tente algo como “quanto gastei esse mês?”, “gastei 30 no almoço” ou “marca dentista quinta às 15”. Diga “ajuda” para ver mais exemplos.\n\nPara conversar sobre outros assuntos (explicações, ideias, planos), a IA em nuvem precisa estar ativada neste servidor — sem ela eu entendo só comandos de finanças, agenda, hábitos, alarmes e cotações." };
 }
 
 // ---------------------------------------------------------------------------------------------
 // Entrada pública
 // ---------------------------------------------------------------------------------------------
-export function interpret(rawText: string, now: LocalNow, pending?: Pending): Plan {
+export function interpret(rawText: string, now: LocalNow, pending?: Pending, opts: SpecialOpts = {}): Plan {
   const orig = rawText.normalize("NFC").replace(/\s+/g, " ").trim();
   const f = fold(orig);
   const plan: Plan = { calls: [], planned: [] };
   if (!orig) return { ...plan, reply: "Pode falar — estou ouvindo." };
+
+  // Alarmes, cotações (dólar/Ibovespa) e conversa social.
+  const special = planSpecial(orig, f, now, pending, opts);
+  if (special) return special;
 
   const hasTrigger = new RegExp(TRIGGER_RE.source, "").test(f);
   // "Meu saldo é 2.840" é uma afirmação (ajusta o saldo), apesar de começar como "meu saldo…".
@@ -467,7 +472,7 @@ export function interpret(rawText: string, now: LocalNow, pending?: Pending): Pl
   const isQuestion = !statesBalance && (orig.endsWith("?") || QUESTION_START.test(f));
 
   // Resposta a uma pergunta de acompanhamento ("Onde você gastou R$ 30?")
-  if (pending && !hasTrigger && !isQuestion && orig.length <= 80) {
+  if (pending?.tool === "registrar_gasto" && !hasTrigger && !isQuestion && orig.length <= 80) {
     const input = { ...pending.input };
     if (input.valor_reais === undefined) {
       const t = new Text(orig);

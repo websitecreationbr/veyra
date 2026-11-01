@@ -189,4 +189,16 @@ CREATE TABLE rate_limits (
 );
 `,
   },
+  {
+    name: "004_continuacoes",
+    sql: `
+CREATE TABLE chat_continuations (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  state      TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_continuations_user ON chat_continuations(user_id);
+`,
+  },
 ];

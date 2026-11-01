@@ -1,6 +1,11 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "../lib/api";
 import type { ChatMessage } from "../lib/types";
+import { plugin, speak } from "../lib/native";
+import { runDeviceCalls, type DeviceCall } from "../lib/device";
+import { voiceReplies } from "../lib/config";
+
+interface Turn { user?: ChatMessage; assistant: ChatMessage | null; device?: { continuationId: string; calls: DeviceCall[] } }
 
 type Tone = "ok" | "error" | "info";
 interface Toast { id: number; text: string; tone: Tone }
@@ -60,8 +65,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     inFlight.current = true;
     setSending(true);
     try {
-      const r = await api<{ user: ChatMessage; assistant: ChatMessage }>("POST", "/api/chat", { text });
-      setMessages((m) => [...m.filter((x) => x.id !== tempId), r.user, r.assistant]);
+      let r = await api<Turn>("POST", "/api/chat", { text });
+      const user = r.user;
+      // A IA/servidor pediu ações no aparelho (alarme, calendário): o app executa e devolve o resultado REAL.
+      for (let i = 0; i < 4 && r.device; i++) {
+        const results = await runDeviceCalls(r.device.calls, plugin(), (msg) => window.confirm(msg));
+        r = await api<Turn>("POST", "/api/chat/continue", { continuationId: r.device.continuationId, results });
+      }
+      const assistant = r.assistant;
+      setMessages((m) => [...m.filter((x) => x.id !== tempId), ...(user ? [user] : []), ...(assistant ? [assistant] : [])]);
+      if (assistant && voiceReplies()) void speak(assistant.text);
       bump();
     } catch (e) {
       setMessages((m) => m.map((x) => (x.id === tempId ? { ...x, failed: true } : x)));

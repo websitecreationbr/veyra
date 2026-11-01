@@ -1,17 +1,23 @@
-import { route, sessionCookie, clearCookie } from "../http/app.js";
+import { route, sessionCookie, clearCookie, type AppState, type Req } from "../http/app.js";
 import * as auth from "../services/auth.js";
 import * as fin from "../services/finance.js";
 import * as ag from "../services/agenda.js";
 import * as hb from "../services/habits.js";
 import * as msgs from "../services/messages.js";
 import { dashboard } from "../services/dashboard.js";
-import { handleChat } from "../ai/chat.js";
+import { handleChat, handleContinue } from "../ai/chat.js";
 import { PLANNED } from "../ai/planned.js";
 import { loadDemo, removeDemo } from "../demo/seed.js";
 import { HttpError, asObject, bad, oneOf, reqStr, str } from "../util/validate.js";
 import { PERIODS, addDays, isDate, periodRange, type Period } from "../util/time.js";
 
 const publicUser = (u: auth.User) => ({ id: u.id, name: u.name, email: u.email, timezone: u.timezone });
+
+/** Site: cookie HttpOnly. App Android: o token vai no corpo (guardado só no aparelho) e é enviado em Authorization: Bearer. */
+function sessionReply(r: Req, app: AppState, user: auth.User, token: string, status: number) {
+  if (r.client === "app" || r.raw.headers["x-veyra-client"] === "app") return { status, json: { user: publicUser(user), token } };
+  return { status, json: { user: publicUser(user) }, headers: { "Set-Cookie": sessionCookie(token, { isProd: app.opts.isProd, days: app.opts.sessionDays }) } };
+}
 
 // ---------------- Saúde ----------------
 route("GET", "/api/health", { auth: false }, async (_r, app) => {
@@ -37,7 +43,7 @@ route("POST", "/api/auth/register", { auth: false }, async (r, app) => {
     timezone: str(b, "timezone", { optional: true, max: 60 }),
   });
   const token = await auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
-  return { status: 201, json: { user: publicUser(user) }, headers: { "Set-Cookie": sessionCookie(token, { isProd: app.opts.isProd, days: app.opts.sessionDays }) } };
+  return sessionReply(r, app, user, token, 201);
 });
 
 route("POST", "/api/auth/login", { auth: false }, async (r, app) => {
@@ -49,7 +55,7 @@ route("POST", "/api/auth/login", { auth: false }, async (r, app) => {
   const user = await auth.authenticate(app.opts.db, email, typeof b.password === "string" ? b.password : "");
   await app.limiters.login.reset(key);
   const token = await auth.createSession(app.opts.db, user.id, app.opts.sessionDays, app.opts.clock.now());
-  return { json: { user: publicUser(user) }, headers: { "Set-Cookie": sessionCookie(token, { isProd: app.opts.isProd, days: app.opts.sessionDays }) } };
+  return sessionReply(r, app, user, token, 200);
 });
 
 route("POST", "/api/auth/logout", { auth: false }, async (r, app) => {
@@ -60,8 +66,8 @@ route("POST", "/api/auth/logout", { auth: false }, async (r, app) => {
 route("GET", "/api/me", {}, (r, app) => ({
   json: {
     user: publicUser(r.user!),
-    // Nunca devolvemos a chave — só dizemos qual "cérebro" está ativo.
-    ai: { provider: app.opts.llm ? "claude" : "local" },
+    // Nunca devolvemos a chave — só dizemos se há IA em nuvem ("cloud") ou só o modo local.
+    ai: { provider: app.opts.llm ? "cloud" : "local", market: !!app.opts.market },
     planned: Object.values(PLANNED).map((p) => ({ id: p.id, title: p.title, phase: p.phase, needs: p.needs })),
   },
 }));
@@ -82,6 +88,21 @@ route("POST", "/api/chat", {}, async (r, app) => {
   const b = asObject(r.body);
   const turn = await handleChat(await r.ctx(), reqStr(b, "text", { max: 2000 }), { llm: app.opts.llm });
   return { json: turn };
+});
+/** O app executou as ações do aparelho (alarme/calendário) e devolve os resultados; a conversa continua. */
+route("POST", "/api/chat/continue", {}, async (r, app) => {
+  const wait = await app.limiters.chat.check(r.user!.id);
+  if (wait) throw new HttpError(429, "Calma, uma mensagem de cada vez. Tente de novo em instantes.", "limite");
+  const b = asObject(r.body);
+  const continuationId = reqStr(b, "continuationId", { max: 80 });
+  if (!Array.isArray(b.results) || b.results.length > 20) throw bad("Resultados inválidos.");
+  const results = b.results.map((x: unknown) => {
+    const o = asObject(x, "resultado");
+    const res = asObject(o.result ?? {}, "resultado");
+    if (JSON.stringify(res).length > 20_000) throw bad("Resultado grande demais.");
+    return { callId: reqStr(o, "callId", { max: 80 }), result: { ...res, ok: res.ok === true } };
+  });
+  return { json: await handleContinue(await r.ctx(), continuationId, results, { llm: app.opts.llm }) };
 });
 route("GET", "/api/chat/history", {}, async (r) => ({ json: { messages: await msgs.history(await r.ctx(), 80) } }));
 route("DELETE", "/api/chat/history", {}, async (r) => {

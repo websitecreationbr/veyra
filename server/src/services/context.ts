@@ -8,10 +8,17 @@ export interface Ctx {
   tz: string;
   clock: Clock;
   now: LocalNow;
+  /** Cotações (dólar/Ibovespa); ausente nos testes que não precisam. */
+  market?: import("./market.js").MarketService;
+  /** Recursos do aparelho disponíveis nesta conversa (alarm, calendar). Vazio no navegador. */
+  capabilities: Set<string>;
 }
 
-export async function makeCtx(db: DB, userId: string, clock: Clock): Promise<Ctx> {
+export async function makeCtx(
+  db: DB, userId: string, clock: Clock,
+  extra: { market?: import("./market.js").MarketService; capabilities?: Set<string> } = {},
+): Promise<Ctx> {
   const s = await get<{ timezone: string }>(db, "SELECT timezone FROM settings WHERE user_id = ?", userId);
   const tz = s?.timezone ?? DEFAULT_TZ;
-  return { db, userId, tz, clock, now: localNow(clock, tz) };
+  return { db, userId, tz, clock, now: localNow(clock, tz), market: extra.market, capabilities: extra.capabilities ?? new Set() };
 }

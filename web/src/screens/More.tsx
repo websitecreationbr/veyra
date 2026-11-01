@@ -7,6 +7,8 @@ import { useApi } from "../lib/useApi";
 import { api } from "../lib/api";
 import { errText } from "../lib/actions";
 import type { Dashboard, Habit } from "../lib/types";
+import { setVoiceReplies, voiceReplies } from "../lib/config";
+import { speak, stopSpeaking, ttsAvailable } from "../lib/native";
 
 const ZONES: [string, string][] = [
   ["America/Sao_Paulo", "Brasília (São Paulo, Rio, BH)"], ["America/Bahia", "Bahia"], ["America/Fortaleza", "Fortaleza"], ["America/Recife", "Recife"],
@@ -21,6 +23,7 @@ export function More() {
   const [name, setName] = useState(user?.name ?? "");
   const [saving, setSaving] = useState(false);
   const [busyDemo, setBusyDemo] = useState(false);
+  const [voice, setVoice] = useState(voiceReplies());
 
   const saveName = async () => {
     setSaving(true);
@@ -58,11 +61,20 @@ export function More() {
 
       <Card aria-label="Como a Veyra entende você">
         <h2 className="section-title">Como a Veyra entende você</h2>
-        {ai === "claude" ? (
+        {ai === "cloud" ? (
           <p><span className="tag tag-ok">IA em nuvem ativa</span> Frases livres, várias ações por mensagem. Se a conexão falhar, o modo local assume.</p>
         ) : (
           <p><span className="tag">Modo local</span> Entendo os comandos mais comuns em português (gastos, receitas, lembretes, agenda, hábitos). Para frases livres, o administrador pode ativar a IA em nuvem no servidor.</p>
         )}
+      </Card>
+
+      <Card aria-label="Voz">
+        <h2 className="section-title">Voz</h2>
+        <label className="switch-row">
+          <input type="checkbox" checked={voice} onChange={(e) => { setVoice(e.target.checked); setVoiceReplies(e.target.checked); if (!e.target.checked) void stopSpeaking(); else if (ttsAvailable()) void speak("Respostas faladas ativadas."); }} />
+          <span>Ler as respostas em voz alta</span>
+        </label>
+        <p className="field-hint">{ttsAvailable() ? "Usa a voz do próprio aparelho (gratuita). Toque no microfone na conversa para falar com a Veyra." : "Este navegador não tem voz sintetizada."}</p>
       </Card>
 
       <Card aria-label="Hábitos">

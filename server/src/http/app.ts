@@ -17,6 +17,13 @@ export interface AppOptions {
   llm?: Llm;
   isProd: boolean;
   allowedOrigins: string[];
+  /**
+   * Origens do aplicativo Android (WebView do Capacitor). Chamadas vindas delas são "cross-origin": recebem CORS,
+   * NÃO usam cookie (só o cabeçalho Authorization: Bearer) e por isso não são vulneráveis a CSRF.
+   */
+  appOrigins?: string[];
+  /** Serviço de cotações (dólar/Ibovespa). Ausente = consultas de mercado indisponíveis. */
+  market?: import("../services/market.js").MarketService;
   trustProxy: boolean;
   sessionDays: number;
   webDist?: string;
@@ -33,6 +40,10 @@ export interface Req {
   ip: string;
   user: User | null;
   token: string | undefined;
+  /** "app" = aplicativo Android (usa Bearer); "web" = navegador (usa cookie). */
+  client: "app" | "web";
+  /** Recursos do aparelho que o cliente declarou (ex.: alarm, calendar). Só o app Android declara algum. */
+  capabilities: Set<string>;
   ctx(): Promise<Ctx>; // exige usuário autenticado
 }
 
@@ -61,6 +72,14 @@ export function route(method: string, path: string, opts: { auth?: boolean }, ha
   const keys: string[] = [];
   const re = new RegExp("^" + path.replace(/:([a-z]+)/gi, (_, k) => (keys.push(k), "([^/]+)")) + "$");
   routes.push({ method, re, keys, auth: opts.auth ?? true, handler });
+}
+
+export const DEFAULT_APP_ORIGINS = ["https://localhost", "http://localhost", "capacitor://localhost"];
+const CAPABILITIES = new Set(["alarm", "calendar"]);
+
+export function bearerToken(header: string | undefined): string | undefined {
+  const m = /^Bearer\s+([A-Za-z0-9_-]{20,200})$/.exec(header ?? "");
+  return m?.[1];
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -176,6 +195,25 @@ export function createHandler(opts: AppOptions): { handle: (req: IncomingMessage
       const method = req.method ?? "GET";
       const ip = clientIp(req, opts.trustProxy);
 
+      // --- CORS (só para o app Android) e identificação de cliente ---
+      const origin = req.headers.origin;
+      const appOrigins = opts.appOrigins ?? DEFAULT_APP_ORIGINS;
+      const sameOrigin = !origin || origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`;
+      const isAppOrigin = !!origin && !sameOrigin && appOrigins.includes(origin);
+      if (isAppOrigin) {
+        res.setHeader("Access-Control-Allow-Origin", origin!);
+        res.setHeader("Vary", "Origin");
+        if (method === "OPTIONS") {
+          res.writeHead(204, {
+            "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "content-type, authorization, x-requested-with, x-veyra-client, x-veyra-capabilities",
+            "Access-Control-Max-Age": "600",
+            ...SECURITY_HEADERS(opts.isProd),
+          });
+          return void res.end();
+        }
+      }
+
       if (!url.pathname.startsWith("/api/")) {
         if (serveStatic(req, res, url.pathname)) return;
         return send(res, 404, { error: "Não encontrado.", code: "nao_encontrado" });
@@ -187,14 +225,18 @@ export function createHandler(opts: AppOptions): { handle: (req: IncomingMessage
       // Proteção CSRF para métodos que alteram estado: cabeçalho customizado + checagem de Origin.
       if (method !== "GET" && method !== "HEAD") {
         if (req.headers["x-requested-with"] !== "veyra") throw new HttpError(403, "Requisição não autorizada.", "csrf");
-        const origin = req.headers.origin;
-        if (origin) {
-          const same = origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`;
-          if (!same && !opts.allowedOrigins.includes(origin)) throw new HttpError(403, "Origem não permitida.", "origem");
+        if (origin && !sameOrigin && !isAppOrigin && !opts.allowedOrigins.includes(origin)) {
+          throw new HttpError(403, "Origem não permitida.", "origem");
         }
       }
 
-      const token = parseCookies(req.headers.cookie)[COOKIE];
+      // Cookie só vale para o site. O app usa Bearer; chamada cross-origin do app NUNCA usa cookie.
+      const bearer = bearerToken(req.headers.authorization);
+      const token = bearer ?? (isAppOrigin ? undefined : parseCookies(req.headers.cookie)[COOKIE]);
+      const client: "app" | "web" = isAppOrigin || bearer ? "app" : "web";
+      const capabilities = new Set(
+        client === "app" ? String(req.headers["x-veyra-capabilities"] ?? "").split(",").map((s) => s.trim()).filter((s) => CAPABILITIES.has(s)) : [],
+      );
       const user = (await userFromSession(opts.db, token, opts.clock.now())) ?? null;
 
       let matched: { r: Route; params: Record<string, string> } | undefined;
@@ -212,10 +254,10 @@ export function createHandler(opts: AppOptions): { handle: (req: IncomingMessage
 
       const body = method === "GET" || method === "HEAD" ? undefined : await readJson(req);
       const request: Req = {
-        raw: req, res, url, params: matched.params, body, ip, user, token,
+        raw: req, res, url, params: matched.params, body, ip, user, token, client, capabilities,
         ctx: async () => {
           if (!user) throw new HttpError(401, "Faça login para continuar.", "nao_autenticado");
-          return makeCtx(opts.db, user.id, opts.clock);
+          return makeCtx(opts.db, user.id, opts.clock, { market: opts.market, capabilities });
         },
       };
       const reply = await matched.r.handler(request, state);

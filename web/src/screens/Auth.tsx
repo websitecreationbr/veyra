@@ -3,6 +3,7 @@ import { Logo } from "../components/Icon";
 import { Button, Field } from "../components/ui";
 import { useAuth } from "../state/auth";
 import { errText } from "../lib/actions";
+import { getServerUrl, needsServerUrl, normalizeServerUrl, setServerUrl, isNativeApp } from "../lib/config";
 
 export function AuthScreen() {
   const { login, register } = useAuth();
@@ -12,11 +13,18 @@ export function AuthScreen() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [server, setServer] = useState(getServerUrl());
+  const askServer = isNativeApp(); // no app Android o endereço do servidor da Veyra precisa estar definido
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     if (mode === "register" && password.length < 8) { setError("A senha precisa ter pelo menos 8 caracteres."); return; }
+    if (askServer) {
+      const url = normalizeServerUrl(server);
+      if (!url) { setError("Informe o endereço do servidor da Veyra (ex.: https://seu-app.vercel.app)."); return; }
+      setServerUrl(url);
+    } else if (needsServerUrl()) return;
     setBusy(true);
     try {
       if (mode === "login") await login(email, password);
@@ -41,6 +49,7 @@ export function AuthScreen() {
         </div>
 
         <form onSubmit={submit} noValidate>
+          {askServer && <Field label="Endereço do servidor" type="url" value={server} onChange={(e) => setServer(e.target.value)} autoComplete="url" inputMode="url" placeholder="https://seu-app.vercel.app" hint="O mesmo endereço do site da Veyra. Suas contas e dados são os mesmos." />}
           {mode === "register" && <Field label="Seu nome" value={name} onChange={(e) => setName(e.target.value)} autoComplete="given-name" required maxLength={60} />}
           <Field label="E-mail" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" inputMode="email" required />
           <Field label="Senha" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} required hint={mode === "register" ? "Mínimo de 8 caracteres." : undefined} />

@@ -9,6 +9,8 @@ export interface ActionChip {
   ok: boolean;
   line: string;
   record?: RecordRef;
+  /** Parâmetros da consulta (só para consultas de mercado: serve para entender "e ontem?"). */
+  input?: unknown;
 }
 export interface ChatMessage {
   id: string;
@@ -59,4 +61,18 @@ export async function lastPending(ctx: Ctx): Promise<Pending | undefined> {
 
 export async function clearHistory(ctx: Ctx): Promise<void> {
   await run(ctx.db, "DELETE FROM messages WHERE user_id = ?", ctx.userId);
+}
+
+/** Assunto da última resposta (para perguntas de acompanhamento como "ele subiu ou caiu hoje?"). */
+export async function lastTopic(ctx: Ctx): Promise<{ market?: "dolar" | "ibovespa" }> {
+  const last = await get<Row>(ctx.db, "SELECT * FROM messages WHERE user_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1", ctx.userId);
+  if (!last?.actions) return {};
+  try {
+    const chips = JSON.parse(last.actions) as ActionChip[];
+    const m = chips.find((c) => c.tool === "consultar_mercado" && c.ok);
+    const a = (m?.input as { ativo?: string } | undefined)?.ativo;
+    return a === "dolar" || a === "ibovespa" ? { market: a } : {};
+  } catch {
+    return {};
+  }
 }

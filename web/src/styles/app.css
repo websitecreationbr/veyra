@@ -25,7 +25,7 @@
 
   --radius: 16px;
   --radius-sm: 12px;
-  --nav-h: calc(64px + env(safe-area-inset-bottom, 0px));
+  --nav-h: calc(64px + env(safe-area-inset-bottom, var(--safe-area-inset-bottom, 0px)));
   --rail-w: 232px;
   --font: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
@@ -70,7 +70,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; width: 100%; 
 .page-head h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
 
 /* ---------- Navegação ---------- */
-.nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, var(--safe-area-inset-bottom, 0px)); }
 .nav-brand { display: none; }
 .nav ul { display: grid; grid-template-columns: repeat(5, 1fr); height: 64px; }
 .nav li { display: contents; }
@@ -201,7 +201,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; width: 100%; 
 
 /* ---------- Folha ---------- */
 .sheet-backdrop { position: fixed; inset: 0; background: rgba(23, 25, 28, 0.38); z-index: 50; display: flex; align-items: flex-end; justify-content: center; animation: fade 0.18s ease-out; }
-.sheet { width: 100%; max-width: 480px; background: var(--card); border-radius: 22px 22px 0 0; padding: 10px 20px calc(24px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 12px; outline: 0; animation: rise 0.22s ease-out; }
+.sheet { width: 100%; max-width: 480px; background: var(--card); border-radius: 22px 22px 0 0; padding: 10px 20px calc(24px + env(safe-area-inset-bottom, var(--safe-area-inset-bottom, 0px))); display: grid; gap: 12px; outline: 0; animation: rise 0.22s ease-out; }
 .sheet-grip { width: 40px; height: 4px; border-radius: 4px; background: var(--line-strong); margin: 0 auto 4px; }
 .sheet-title { font-size: 19px; font-weight: 650; }
 .sheet-amount { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; }
@@ -332,3 +332,14 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; width: 100%; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* Voz */
+.composer-mic.is-listening { background: #d93025; color: #fff; animation: veyra-pulse 1.2s ease-in-out infinite; }
+.composer-listening { align-self: center; font-size: 13px; color: #d93025; white-space: nowrap; }
+.switch-row { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.switch-row input { width: 20px; height: 20px; accent-color: var(--brand); }
+@keyframes veyra-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(217, 48, 37, 0.45); } 50% { box-shadow: 0 0 0 8px rgba(217, 48, 37, 0); } }
+@media (prefers-reduced-motion: reduce) { .composer-mic.is-listening { animation: none; } }
+
+/* App Android (borda a borda): a barra de status não cobre o conteúdo. No site, o valor é 0. */
+body { padding-top: env(safe-area-inset-top, var(--safe-area-inset-top, 0px)); }

@@ -120,13 +120,13 @@ test("consulta de agenda", () => {
   assert.deepEqual(call("O que tenho hoje?")?.input, { periodo: "hoje" });
 });
 
-test("mercado financeiro, alertas e treinos NÃO são simulados", () => {
-  assert.deepEqual(plan("Como está o Ibovespa?").planned, ["mercado"]);
-  assert.deepEqual(plan("Quanto está o dólar?").planned, ["mercado"]);
-  assert.deepEqual(plan("PETR4 subiu hoje?").planned, ["mercado"]);
+test("mercado: dólar e Ibovespa viram consulta real; outros ativos e alertas NÃO são simulados", () => {
+  assert.deepEqual(plan("Como está o Ibovespa?").calls, [{ name: "consultar_mercado", input: { ativo: "ibovespa", detalhe: "cotacao" } }]);
+  assert.deepEqual(plan("Quanto está o dólar?").calls, [{ name: "consultar_mercado", input: { ativo: "dolar", detalhe: "cotacao" } }]);
+  assert.deepEqual(plan("PETR4 subiu hoje?").planned, ["mercado_outros"]);
   assert.deepEqual(plan("Me avisa quando PETR4 cair mais de 5%.").planned, ["alertas"]);
   assert.deepEqual(plan("Estou evoluindo no supino?").planned, ["treinos"]);
-  for (const t of ["Como está o Ibovespa?", "PETR4 subiu hoje?", "Estou evoluindo no supino?"]) assert.equal(plan(t).calls.length, 0);
+  for (const t of ["PETR4 subiu hoje?", "Estou evoluindo no supino?"]) assert.equal(plan(t).calls.length, 0);
 });
 
 test("treino detalhado marca o hábito e avisa que o detalhe ainda não existe", () => {

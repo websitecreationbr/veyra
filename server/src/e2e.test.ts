@@ -253,9 +253,7 @@ test("Honestidade: mercado, alertas e treinos detalhados NÃO são simulados", a
   const app = await start();
   const c = await signup(app, "honest@a.com");
   for (const [msg, feature] of [
-    ["Como está o Ibovespa?", "Cotações de mercado"],
-    ["Quanto está o dólar?", "Cotações de mercado"],
-    ["PETR4 subiu hoje?", "Cotações de mercado"],
+    ["PETR4 subiu hoje?", "Cotações de outros ativos"],
     ["Me avisa quando o dólar passar de R$ 5,50.", "Alertas de mercado"],
     ["Estou evoluindo no supino?", "treinos"],
   ] as const) {
@@ -436,7 +434,7 @@ test("IA em nuvem (Claude com tool-use): executa funções reais; a chave nunca 
   };
   const app = await start({ llm });
   const c = await signup(app, "claude@a.com");
-  assert.equal((await c.get("/api/me")).json.ai.provider, "claude");
+  assert.equal((await c.get("/api/me")).json.ai.provider, "cloud");
   assert.doesNotMatch((await c.get("/api/me")).text, /sk-|api[_-]?key/i);
 
   const a = await say(c, "almocei por 25 e me lembra amanhã às 8 de pagar a conta");

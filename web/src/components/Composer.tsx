@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Icon } from "./Icon";
 import { useApp } from "../state/app";
+import { cancelListen, listen, speechAvailable } from "../lib/native";
 
 /**
- * Campo "Fale com a Veyra...". Texto funciona; voz ainda NÃO existe (Fase 6) —
- * o botão do microfone diz isso com clareza em vez de fingir que grava.
+ * Campo "Fale com a Veyra...". Texto e voz. A voz usa o reconhecimento do Android (app) ou do navegador:
+ * pede permissão, mostra que está ouvindo, mostra erros em português e pode ser cancelada.
+ * O que foi ouvido é ENVIADO como mensagem normal (mesmo caminho do texto: IA → ferramentas → ações).
  */
 export function Composer({ onSubmit, autoFocus, disabled }: { onSubmit: (text: string) => void; autoFocus?: boolean; disabled?: boolean }) {
   const [text, setText] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const { toast } = useApp();
+  const [listening, setListening] = useState(false);
+  const [thinking, setThinking] = useState(false);
 
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
   useEffect(() => {
@@ -26,6 +30,19 @@ export function Composer({ onSubmit, autoFocus, disabled }: { onSubmit: (text: s
     onSubmit(t);
     setText("");
   };
+  const mic = async () => {
+    if (listening) { await cancelListen(); return; }
+    if (disabled || thinking) return;
+    if (!speechAvailable()) { toast("Este navegador não tem reconhecimento de voz. Use o app Android ou o Chrome, ou digite.", "info"); return; }
+    setListening(true);
+    const r = await listen("pt-BR");
+    setListening(false);
+    if (r.ok) {
+      setThinking(true);
+      onSubmit(r.text);
+      setTimeout(() => setThinking(false), 600);
+    } else if (!r.cancelled) toast(r.error, "error");
+  };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
   };
@@ -33,7 +50,8 @@ export function Composer({ onSubmit, autoFocus, disabled }: { onSubmit: (text: s
   return (
     <form className="composer" onSubmit={submit}>
       <textarea ref={ref} rows={1} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} placeholder="Fale com a Veyra..." aria-label="Mensagem para a Veyra" maxLength={2000} enterKeyHint="send" />
-      <button type="button" className="composer-mic" aria-label="Falar por voz (indisponível)" onClick={() => toast("Comandos por voz ainda não estão disponíveis — chegam na Fase 6.", "info")}>
+      {listening && <span className="composer-listening" role="status">Ouvindo… toque para cancelar</span>}
+      <button type="button" className={`composer-mic${listening ? " is-listening" : ""}`} aria-label={listening ? "Cancelar gravação" : "Falar por voz"} aria-pressed={listening} onClick={() => void mic()}>
         <Icon name="mic" />
       </button>
       <button type="submit" className="composer-send" disabled={!text.trim() || disabled} aria-label="Enviar">

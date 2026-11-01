@@ -4,17 +4,17 @@ import type { PlannedFeature } from "./types.js";
 // Para ativar uma função: implemente o serviço, crie a ferramenta em tools.ts e remova a entrada daqui.
 
 export const PLANNED: Record<string, PlannedFeature> = {
-  mercado: {
-    id: "mercado",
-    title: "Cotações de mercado (Ibovespa, dólar, ações)",
+  mercado_outros: {
+    id: "mercado_outros",
+    title: "Cotações de outros ativos (ações, euro, bitcoin, Selic) — hoje só dólar e Ibovespa",
     phase: "Fase 5",
-    needs: "uma API de cotações (ex.: brapi.dev ou similar) com chave configurada no servidor",
+    needs: "ampliar o serviço de cotações para esses ativos",
   },
   alertas: {
     id: "alertas",
     title: "Alertas de mercado",
     phase: "Fase 5",
-    needs: "a API de cotações e um serviço de monitoramento em segundo plano, com notificações",
+    needs: "um serviço de monitoramento em segundo plano com notificações",
   },
   treinos: {
     id: "treinos",
@@ -28,12 +28,6 @@ export const PLANNED: Record<string, PlannedFeature> = {
     phase: "Fase 6",
     needs: "uma conta na WhatsApp Business Cloud API e um webhook público",
   },
-  audio: {
-    id: "audio",
-    title: "Comandos por áudio",
-    phase: "Fase 6",
-    needs: "um serviço de transcrição de voz",
-  },
   notificacoes: {
     id: "notificacoes",
     title: "Notificações push e lembretes que tocam no horário",
@@ -42,9 +36,9 @@ export const PLANNED: Record<string, PlannedFeature> = {
   },
   calendario: {
     id: "calendario",
-    title: "Integração com calendário externo",
+    title: "Conexão direta com a conta do Google Calendar (o calendário DO CELULAR já funciona no app Android)",
     phase: "Fase 6",
-    needs: "OAuth com Google Calendar / Apple Calendar",
+    needs: "OAuth com Google Calendar",
   },
   resumos: {
     id: "resumos",
